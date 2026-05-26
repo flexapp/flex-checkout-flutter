@@ -1,0 +1,50 @@
+# Dart/Flutter
+.dart_tool/
+.packages
+pubspec.lock
+build/
+*.iml
+
+# Android
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.gradle
+local.properties
+*.ipr
+*.iws
+.idea/
+.externalNativeBuild/
+.cxx/
+
+# iOS
+*.mode1v3
+*.mode2v3
+*.moved-aside
+*.pbxuser
+*.perspectivev3
+xcuserdata
+DerivedData/
+*.hmap
+*.ipa
+*.xcuserstate
+ios/.generated/
+ios/Flutter/flutter_export_environment.sh
+ios/Flutter/Generated.xcconfig
+ios/Runner/GeneratedPluginRegistrant.*
+Pods/
+.symlinks/
+
+# macOS
+.DS_Store
+
+# IDE
+/.vscode/
+
+# Local secrets — never commit
+**/secrets.dart
+
+# Example app — tracked locally only
+example/
