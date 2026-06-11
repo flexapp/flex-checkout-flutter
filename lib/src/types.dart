@@ -31,17 +31,17 @@ enum ModalEventType {
 /// - [listItem]: a card-style row with a purple logo box on the left, the
 ///   "Split into 2 payments" label, and a right-aligned chevron. Intended for
 ///   placement inside a list or menu.
-///
-/// (iOS 1.2.0 also has a `.logo` variant — a circular logo button. It's
-/// intentionally not exposed here until Android has parity; adding it now
-/// would crash Android.)
+/// - [logo]: a circular icon-only button, suited for grid UIs (e.g. a payment
+///   method picker). Android 1.4.0+ / iOS 1.2.0+.
 enum SplitRentButtonVariant {
   defaultVariant,
-  listItem;
+  listItem,
+  logo;
 
   String get value => switch (this) {
         SplitRentButtonVariant.defaultVariant => 'default',
         SplitRentButtonVariant.listItem => 'list_item',
+        SplitRentButtonVariant.logo => 'logo',
       };
 }
 
@@ -80,15 +80,20 @@ class FlexConfig {
   /// End-to-end testing mode. Defaults to false.
   final bool e2e;
 
-  /// Enable verbose logging (Android only; iOS auto-disables logs in
-  /// [FlexEnvironment.prod]). Defaults to false.
+  /// Enable verbose SDK logging. Only active in non-production environments.
+  /// Defaults to false.
   final bool logs;
+
+  /// Enable custom component overrides (e.g. LD-gated split rent button label).
+  /// Defaults to false.
+  final bool customComponents;
 
   const FlexConfig({
     required this.clientId,
     this.environment = FlexEnvironment.int,
     this.e2e = false,
     this.logs = false,
+    this.customComponents = false,
   });
 
   Map<String, dynamic> toMap() => {
@@ -96,6 +101,7 @@ class FlexConfig {
         'environment': environment.value,
         'e2e': e2e,
         'logs': logs,
+        'customComponents': customComponents,
       };
 }
 

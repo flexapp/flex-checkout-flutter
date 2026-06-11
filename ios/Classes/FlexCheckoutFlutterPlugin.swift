@@ -75,9 +75,17 @@ public class FlexCheckoutFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHa
         let clientId = args["clientId"] as? String ?? ""
         let envString = args["environment"] as? String ?? "int"
         let e2e = args["e2e"] as? Bool ?? false
+        let logs = args["logs"] as? Bool ?? false
+        let customComponents = args["customComponents"] as? Bool ?? false
 
         let environment = FlexEnvironment(rawValue: envString) ?? .int
-        let config = FlexConfig(clientId: clientId, environment: environment, e2e: e2e)
+        let config = FlexConfig(
+            clientId: clientId,
+            environment: environment,
+            e2e: e2e,
+            customComponents: customComponents,
+            developer: logs ? FlexDeveloperConfig(logs: true) : nil
+        )
 
         let sdk = Flex.initialize(config: config)
 

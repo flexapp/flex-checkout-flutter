@@ -59,6 +59,7 @@ private class FlexSplitRentButtonNativeView(
         when (value) {
             "default" -> SplitRentButtonVariant.DEFAULT
             "list_item" -> SplitRentButtonVariant.LIST_ITEM
+            "logo" -> SplitRentButtonVariant.LOGO
             else -> null
         }
 
