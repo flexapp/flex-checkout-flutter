@@ -5,6 +5,7 @@ import android.content.Context
 import com.flex.checkout.Flex
 import com.flex.checkout.configuration.CheckoutConfig
 import com.flex.checkout.configuration.FlexConfig
+import com.flex.checkout.configuration.FlexDeveloperConfig
 import com.flex.checkout.types.FlexEnvironment
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
@@ -33,14 +34,6 @@ class FlexCheckoutFlutterPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
     private var eventSink: EventChannel.EventSink? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
-    // Track warmup state so we can fire it once both `Flex.initialize` has
-    // been called AND an Activity is attached — iOS auto-warms on initialize,
-    // but Android's native warmup() requires a Context; we auto-call it here
-    // so partners don't have to. Reset on cleanup so the next initialize
-    // warms the rebuilt SDK.
-    private var sdkInitialized = false
-    private var warmupTriggered = false
-
     // MARK: - FlutterPlugin
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -67,7 +60,6 @@ class FlexCheckoutFlutterPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
         activity = binding.activity
-        maybeWarmup()
     }
 
     override fun onDetachedFromActivityForConfigChanges() {
@@ -76,25 +68,10 @@ class FlexCheckoutFlutterPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
 
     override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
         activity = binding.activity
-        // Don't re-warmup on config-change reattach — the WebView is already
-        // warm from the original attach. warmupTriggered keeps that idempotent
-        // even if maybeWarmup() were called here.
     }
 
     override fun onDetachedFromActivity() {
         activity = null
-    }
-
-    /**
-     * Warm the native WebView once both the SDK is initialized AND an Activity
-     * is attached. Mirrors iOS's auto-warm on `Flex.initialize`.
-     */
-    private fun maybeWarmup() {
-        if (warmupTriggered) return
-        if (!sdkInitialized) return
-        val act = activity ?: return
-        Flex.instance.warmup(act)
-        warmupTriggered = true
     }
 
     // MARK: - MethodCallHandler
@@ -140,10 +117,6 @@ class FlexCheckoutFlutterPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             }
             "cleanup" -> {
                 Flex.instance.cleanup()
-                // Reset warmup state so the next initialize re-warms the
-                // rebuilt SDK.
-                sdkInitialized = false
-                warmupTriggered = false
                 result.success(null)
             }
             else -> result.notImplemented()
@@ -157,21 +130,22 @@ class FlexCheckoutFlutterPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         val envString = args["environment"] as? String ?: "int"
         val e2e = args["e2e"] as? Boolean ?: false
         val logs = args["logs"] as? Boolean ?: false
+        val customComponents = args["customComponents"] as? Boolean ?: false
 
-        val environment = FlexEnvironment.entries.find { it.value == envString } ?: FlexEnvironment.INT
-        val config = FlexConfig(clientId = clientId, environment = environment, e2e = e2e, logs = logs)
+        val environment = FlexEnvironment.fromString(envString) ?: FlexEnvironment.INT
+        val config = FlexConfig(
+            clientId = clientId,
+            environment = environment,
+            e2e = e2e,
+            customComponents = customComponents,
+            developer = if (logs) FlexDeveloperConfig(logs = true) else null,
+        )
 
         val sdk = Flex.initialize(appContext, config)
 
-        // Register a token loader that calls back into Dart when a token is needed.
         sdk.loadToken {
             requestTokenFromDart()
         }
-
-        sdkInitialized = true
-        // If the Activity is already attached by now, warm immediately.
-        // Otherwise onAttachedToActivity will trigger warmup later.
-        maybeWarmup()
 
         result.success(null)
     }
