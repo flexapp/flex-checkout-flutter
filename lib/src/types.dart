@@ -69,6 +69,23 @@ enum SplitRentButtonColor {
   String get value => name;
 }
 
+/// Developer-only configuration options for the Flex Checkout SDK.
+///
+/// Pass an instance to [FlexConfig.developer] to opt in to debug behaviours.
+/// All options default to `false`.
+class FlexDeveloperConfig {
+  /// End-to-end testing mode.
+  final bool e2e;
+
+  /// Enable verbose SDK logging. Only active in non-production environments.
+  final bool logs;
+
+  const FlexDeveloperConfig({
+    this.e2e = false,
+    this.logs = false,
+  });
+}
+
 /// SDK initialization configuration.
 class FlexConfig {
   /// Your Flex client ID.
@@ -77,30 +94,27 @@ class FlexConfig {
   /// The target environment. Defaults to [FlexEnvironment.int].
   final FlexEnvironment environment;
 
-  /// End-to-end testing mode. Defaults to false.
-  final bool e2e;
-
-  /// Enable verbose SDK logging. Only active in non-production environments.
-  /// Defaults to false.
-  final bool logs;
-
   /// Enable custom component overrides (e.g. LD-gated split rent button label).
   /// Defaults to false.
   final bool customComponents;
 
+  /// Developer-only configuration options (e2e mode, verbose logging, etc.).
+  ///
+  /// Leave `null` (the default) in production builds.
+  final FlexDeveloperConfig? developer;
+
   const FlexConfig({
     required this.clientId,
     this.environment = FlexEnvironment.int,
-    this.e2e = false,
-    this.logs = false,
     this.customComponents = false,
+    this.developer,
   });
 
   Map<String, dynamic> toMap() => {
         'clientId': clientId,
         'environment': environment.value,
-        'e2e': e2e,
-        'logs': logs,
+        'e2e': developer?.e2e ?? false,
+        'logs': developer?.logs ?? false,
         'customComponents': customComponents,
       };
 }
