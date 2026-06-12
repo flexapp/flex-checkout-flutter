@@ -230,7 +230,6 @@ After `cleanup`, the next `Flex.initialize` rebuilds the native SDK from scratch
 |---------------|-------------------|---------------------|------------------------------------|
 | `clientId`    | `String`          | required            | Your Flex client ID                |
 | `environment` | `FlexEnvironment` | `FlexEnvironment.int` | Target environment               |
-| `e2e`         | `bool`            | `false`             | End-to-end testing mode            |
 | `logs`        | `bool`            | `false`             | Verbose logging (Android only; iOS auto-disables logs in `prod`) |
 
 ### `FlexEnvironment`
