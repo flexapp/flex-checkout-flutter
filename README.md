@@ -24,7 +24,7 @@ dependencies:
   flex_checkout_flutter:
     git:
       url: https://github.com/flexapp/flex-checkout-flutter.git
-      ref: 1.0.0
+      ref: 1.2.0
 ```
 
 Then run:
