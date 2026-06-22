@@ -82,9 +82,8 @@ public class FlexCheckoutFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHa
         let config = FlexConfig(
             clientId: clientId,
             environment: environment,
-            e2e: e2e,
             customComponents: customComponents,
-            developer: logs ? FlexDeveloperConfig(logs: true) : nil
+            developer: (logs || e2e) ? FlexDeveloperConfig(logs: logs, e2e: e2e) : nil
         )
 
         let sdk = Flex.initialize(config: config)

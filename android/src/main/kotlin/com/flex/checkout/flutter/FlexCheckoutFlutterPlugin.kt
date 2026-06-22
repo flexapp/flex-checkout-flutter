@@ -136,9 +136,8 @@ class FlexCheckoutFlutterPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         val config = FlexConfig(
             clientId = clientId,
             environment = environment,
-            e2e = e2e,
             customComponents = customComponents,
-            developer = if (logs) FlexDeveloperConfig(logs = true) else null,
+            developer = if (logs || e2e) FlexDeveloperConfig(logs = logs, e2e = e2e) else null,
         )
 
         val sdk = Flex.initialize(appContext, config)
