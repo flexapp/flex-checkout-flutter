@@ -1,6 +1,6 @@
 name: flex_checkout_flutter
 description: Flutter plugin for Flex Checkout SDK — wraps native iOS (FlexCheckout) and Android (com.flex.checkout) implementations.
-version: 1.2.2
+version: 1.2.3
 homepage: https://github.com/flexapp/flex-checkout-flutter
 
 environment:

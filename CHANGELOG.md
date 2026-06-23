@@ -1,3 +1,7 @@
+## 1.2.3
+
+- Fix: migrate Android `kotlinOptions.jvmTarget` to `compilerOptions` DSL, required by Kotlin Gradle plugin shipped with Flutter 3.41.x.
+
 ## 1.2.2
 
 - Fix: route `e2e` flag through `FlexDeveloperConfig` on both iOS and Android to match native SDK 1.4.0 / 1.5.x API.
