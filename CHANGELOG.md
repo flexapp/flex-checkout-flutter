@@ -1,3 +1,8 @@
+## 1.2.4
+
+- Attribute analytics events to `flutter`: the plugin now passes `sdk_platform: flutter` and its own package version as `sdk_version` down into both native cores at init (SDK-1146).
+- Adopt iOS SDK 1.4.1 and Android SDK 1.5.2 (expose the wrapper-attribution init API).
+
 ## 1.2.3
 
 - Fix: migrate Android `kotlinOptions.jvmTarget` to `compilerOptions` DSL, required by Kotlin Gradle plugin shipped with Flutter 3.41.x.

@@ -1,6 +1,6 @@
 import Flutter
 import UIKit
-import FlexCheckout
+@_spi(WrapperSDK) import FlexCheckout
 
 public class FlexCheckoutFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler, @unchecked Sendable {
 
@@ -86,7 +86,13 @@ public class FlexCheckoutFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHa
             developer: (logs || e2e) ? FlexDeveloperConfig(logs: logs, e2e: e2e) : nil
         )
 
-        let sdk = Flex.initialize(config: config)
+        // Attribute analytics events to the Flutter wrapper (SDK-1146); nil falls
+        // back to the native iOS defaults.
+        let wrapper = (args["sdkVersion"] as? String).map {
+            FlexWrapperInfo(platform: .flutter, version: $0)
+        }
+
+        let sdk = Flex.initialize(config: config, wrapper: wrapper)
 
         // Register a token loader that calls back into Dart when a token is needed.
         sdk.loadToken { [weak self] in

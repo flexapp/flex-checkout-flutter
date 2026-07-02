@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 
 import 'flex.dart';
 import 'types.dart';
+import 'version.dart';
 
 /// The Flex Checkout SDK instance. Obtain via [Flex.initialize].
 class FlexSDK {
@@ -19,7 +20,12 @@ class FlexSDK {
   static Future<FlexSDK> create(FlexConfig config) async {
     final sdk = FlexSDK._();
     _channel.setMethodCallHandler(sdk._handleNativeCall);
-    await _channel.invokeMethod<void>('initialize', config.toMap());
+    // Pass the plugin's own version down so native analytics events are
+    // attributed to `flutter` + this version rather than ios/android (SDK-1146).
+    await _channel.invokeMethod<void>('initialize', {
+      ...config.toMap(),
+      'sdkVersion': kFlexCheckoutFlutterVersion,
+    });
     return sdk;
   }
 
