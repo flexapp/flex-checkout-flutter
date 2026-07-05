@@ -1,3 +1,7 @@
+## 1.2.4
+
+- Adopt Android SDK 1.5.3 and iOS SDK 1.4.1.
+
 ## 1.2.3
 
 - Fix: migrate Android `kotlinOptions.jvmTarget` to `compilerOptions` DSL, required by Kotlin Gradle plugin shipped with Flutter 3.41.x.
