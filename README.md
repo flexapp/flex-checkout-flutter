@@ -6,10 +6,7 @@ Add to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  flex_checkout_flutter:
-    git:
-      url: https://github.com/flexapp/flex-checkout-flutter.git
-      ref: 1.2.3
+  flex_checkout_flutter: ^1.2.4
 ```
 
 ## Documentation
