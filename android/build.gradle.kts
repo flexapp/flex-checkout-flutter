@@ -30,5 +30,5 @@ android {
 }
 
 dependencies {
-    implementation("com.github.flexapp:flex-checkout-android:1.5.3")
+    implementation("com.github.flexapp:flex-checkout-android:1.5.4")
 }

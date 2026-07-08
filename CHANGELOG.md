@@ -1,3 +1,7 @@
+## 1.2.5
+
+- Adopt Android SDK 1.5.4 and iOS SDK 1.4.2.
+
 ## 1.2.4
 
 - Adopt Android SDK 1.5.3 and iOS SDK 1.4.1.
