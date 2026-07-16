@@ -1,3 +1,11 @@
+## 1.2.6
+
+- Adopt Android SDK 1.5.5: checkout lifecycle fixes — orphaned sheets after
+  process death now self-dismiss instead of hanging, reopening checkout after
+  `cleanup()` no longer stalls on the loading sheet, and the warm-reopen token
+  race (token flag flipped on resolution rather than actual WebView delivery)
+  is fixed.
+
 ## 1.2.5
 
 - Adopt Android SDK 1.5.4 and iOS SDK 1.4.2.
