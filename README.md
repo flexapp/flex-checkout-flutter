@@ -6,7 +6,7 @@ Add to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  flex_checkout_flutter: ^1.2.6
+  flex_checkout_flutter: ^1.3.0
 ```
 
 ## Documentation

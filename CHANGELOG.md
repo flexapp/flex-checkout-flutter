@@ -1,4 +1,4 @@
-## Unreleased
+## 1.3.0
 
 - Attribute analytics events to `flutter`: the plugin now passes `sdk_platform: flutter` and its own package version as `sdk_version` down into both native cores at init (SDK-1146).
 - Add `FlexStatusCard` widget wrapping the new native Status Card component on both platforms (SDK-1243).
