@@ -14,12 +14,17 @@ enum FlexEnvironment {
 /// Event types emitted during the checkout flow.
 enum ModalEventType {
   onboardingCompleted,
-  paymentCompleted;
+  paymentCompleted,
+
+  /// The user updated their autopay status mid-flow. Non-terminal: the
+  /// checkout stays open after this event.
+  autopayStatusUpdated;
 
   static ModalEventType fromRawValue(String value) {
     return switch (value) {
       'MODAL_ONBOARDING_COMPLETED' => ModalEventType.onboardingCompleted,
       'MODAL_PAYMENT_COMPLETED' => ModalEventType.paymentCompleted,
+      'MODAL_AUTOPAY_STATUS_UPDATED' => ModalEventType.autopayStatusUpdated,
       _ => throw ArgumentError('Unknown ModalEventType: $value'),
     };
   }

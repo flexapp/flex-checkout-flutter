@@ -27,6 +27,11 @@ public class FlexCheckoutFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHa
             FlexSplitRentButtonFactory(),
             withId: "com.flex.checkout/split-rent-button"
         )
+
+        registrar.register(
+            FlexStatusCardFactory(),
+            withId: "com.flex.checkout/status-card"
+        )
     }
 
     // MARK: - FlutterPlugin

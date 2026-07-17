@@ -52,6 +52,11 @@ class FlexCheckoutFlutterPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             "com.flex.checkout/split-rent-button",
             FlexSplitRentButtonFactory { activity }
         )
+
+        binding.platformViewRegistry.registerViewFactory(
+            "com.flex.checkout/status-card",
+            FlexStatusCardFactory { activity }
+        )
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {

@@ -1,6 +1,9 @@
 ## Unreleased
 
 - Attribute analytics events to `flutter`: the plugin now passes `sdk_platform: flutter` and its own package version as `sdk_version` down into both native cores at init (SDK-1146).
+- Add `FlexStatusCard` widget wrapping the new native Status Card component on both platforms (SDK-1243).
+- Add `ModalEventType.autopayStatusUpdated` for the new non-terminal `MODAL_AUTOPAY_STATUS_UPDATED` checkout event.
+- Adopt Android SDK 1.6.0 and iOS SDK 1.5.0.
 
 ## 1.2.6
 

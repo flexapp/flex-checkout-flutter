@@ -3,6 +3,30 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flex_checkout_flutter/flex_checkout_flutter.dart';
 
 void main() {
+  group('ModalEventType.fromRawValue', () {
+    test('maps all native raw values', () {
+      expect(
+        ModalEventType.fromRawValue('MODAL_ONBOARDING_COMPLETED'),
+        ModalEventType.onboardingCompleted,
+      );
+      expect(
+        ModalEventType.fromRawValue('MODAL_PAYMENT_COMPLETED'),
+        ModalEventType.paymentCompleted,
+      );
+      expect(
+        ModalEventType.fromRawValue('MODAL_AUTOPAY_STATUS_UPDATED'),
+        ModalEventType.autopayStatusUpdated,
+      );
+    });
+
+    test('throws on unknown raw value', () {
+      expect(
+        () => ModalEventType.fromRawValue('MODAL_UNKNOWN'),
+        throwsArgumentError,
+      );
+    });
+  });
+
   group('FlexConfig.toMap', () {
     test('defaults customComponents to false when not specified', () {
       final map = const FlexConfig(clientId: 'test-id').toMap();
