@@ -1,3 +1,7 @@
+## Unreleased
+
+- Attribute analytics events to `flutter`: the plugin now passes `sdk_platform: flutter` and its own package version as `sdk_version` down into both native cores at init (SDK-1146).
+
 ## 1.2.6
 
 - Adopt Android SDK 1.5.5: checkout lifecycle fixes — orphaned sheets after

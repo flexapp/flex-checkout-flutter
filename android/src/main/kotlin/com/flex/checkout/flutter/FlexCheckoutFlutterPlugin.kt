@@ -6,7 +6,10 @@ import com.flex.checkout.Flex
 import com.flex.checkout.configuration.CheckoutConfig
 import com.flex.checkout.configuration.FlexConfig
 import com.flex.checkout.configuration.FlexDeveloperConfig
+import com.flex.checkout.configuration.FlexWrapperInfo
+import com.flex.checkout.configuration.FlexWrapperPlatform
 import com.flex.checkout.types.FlexEnvironment
+import com.flex.checkout.types.FlexInternalWrapperApi
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -125,6 +128,7 @@ class FlexCheckoutFlutterPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
 
     // MARK: - Initialize
 
+    @OptIn(FlexInternalWrapperApi::class)
     private fun handleInitialize(args: Map<*, *>, result: Result) {
         val clientId = args["clientId"] as? String ?: ""
         val envString = args["environment"] as? String ?: "int"
@@ -140,7 +144,12 @@ class FlexCheckoutFlutterPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             developer = if (logs || e2e) FlexDeveloperConfig(logs = logs, e2e = e2e) else null,
         )
 
-        val sdk = Flex.initialize(appContext, config)
+        // Attribute analytics events to the Flutter wrapper (SDK-1146); null falls
+        // back to the native Android defaults.
+        val wrapper = (args["sdkVersion"] as? String)
+            ?.let { FlexWrapperInfo(FlexWrapperPlatform.FLUTTER, it) }
+
+        val sdk = Flex.initialize(appContext, config, wrapper)
 
         sdk.loadToken {
             requestTokenFromDart()
