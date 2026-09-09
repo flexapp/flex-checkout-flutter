@@ -1,8 +1,3 @@
-## 1.3.1
-
-- Adopt Android SDK 1.7.0: `closeCheckout()` now dismisses the checkout sheet instead of only firing `onClose` (SDK-1057), and a warm reopen skips the interstitial without waiting on token delivery (SDK-1058).
-- Add `ModalEventType.additionalVerificationRequired` for the new non-terminal `MODAL_ADDITIONAL_VERIFICATION_REQUIRED` checkout event that Android SDK 1.7.0 emits. Without this, `ModalEventType.fromRawValue` would throw an `ArgumentError` when the event fired.
-
 ## 1.3.0
 
 - Attribute analytics events to `flutter`: the plugin now passes `sdk_platform: flutter` and its own package version as `sdk_version` down into both native cores at init (SDK-1146).
