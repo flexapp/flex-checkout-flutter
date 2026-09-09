@@ -1,0 +1,128 @@
+name: flex-checkout-flutter / Sauce tests
+
+# Builds the centralized host app (sdk-test-automation :: example-apps/flutter-default, both
+# platforms) against this PR's plugin source, uploads to Sauce, and dispatches the centralized
+# suites. Results come back as informational commit statuses on the PR — this workflow doesn't
+# block on them.
+#
+# Mirrors flex-checkout-react-native's sauce-tests.yml (SDK-441) minus its version-bump split:
+# this repo has no release-gate workflow yet, so every PR dispatches. The build is a cross-repo
+# call into sdk-test-automation's build-flutter-{android,ios}-default.yml rather than a local
+# reimplementation, so the two copies can't drift apart. Reusable-workflow calls must be
+# job-level `uses:`, so each platform is its own job, with dispatch logic in a downstream job.
+#
+# sdk_version here is a git ref of THIS repo (the build workflows rewrite the host app's pubspec
+# git dependency to it), so the PR head SHA builds the host app against exactly this PR's plugin
+# code — including its pinned native SDK versions.
+#
+# Prereqs (same as RN's): sdk-test-automation allows org reusable-workflow access, and the Flex
+# CI GitHub App (FLEX_GH_APP_ID/KEY) is INSTALLED ON THIS REPO with Commit statuses: write and
+# Issues/Pull requests: write — the central receivers post results back through it.
+#
+# Credentials forwarded via `secrets: inherit`: FLEX_CLIENT_ID_DEFAULT, FLEX_API_KEY_DEFAULT,
+# SAUCE_USERNAME, SAUCE_ACCESS_KEY, FLEX_GH_APP_ID, FLEX_GH_APP_KEY.
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    name: Build + upload Android host app (vs PR plugin source)
+    concurrency:
+      group: sauce-flutter-android-${{ github.head_ref || github.ref_name }}
+      cancel-in-progress: true
+    uses: flexapp/sdk-test-automation/.github/workflows/build-flutter-android-default.yml@main
+    with:
+      sdk_version: ${{ github.event.pull_request.head.sha || github.sha }}
+      do_upload: true
+    secrets: inherit
+
+  build-ios:
+    name: Build + upload iOS host app (vs PR plugin source)
+    concurrency:
+      group: sauce-flutter-ios-${{ github.head_ref || github.ref_name }}
+      cancel-in-progress: true
+    uses: flexapp/sdk-test-automation/.github/workflows/build-flutter-ios-default.yml@main
+    with:
+      sdk_version: ${{ github.event.pull_request.head.sha || github.sha }}
+      do_upload: true
+    secrets: inherit
+
+  dispatch:
+    name: Dispatch centralized tests
+    needs: [build-android, build-ios]
+    # always(): without it, GitHub skips this job outright when a `needs` dependency failed,
+    # which would leave a broken build with zero PR signal beyond the build job itself.
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # sticky PR comment when the build/dispatch fails before tests run
+    steps:
+      - name: Fail loudly if either build job didn't succeed
+        if: ${{ needs.build-android.result != 'success' || needs.build-ios.result != 'success' }}
+        run: |
+          echo "::error::build-android=${{ needs.build-android.result }} build-ios=${{ needs.build-ios.result }} — at least one host-app build failed, so its suite was never dispatched."
+          exit 1
+
+      - name: Mint GitHub App token (dispatch on sdk-test-automation)
+        id: app-token
+        timeout-minutes: 5
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.FLEX_GH_APP_ID }}
+          private-key: ${{ secrets.FLEX_GH_APP_KEY }}
+          owner: flexapp
+          repositories: sdk-test-automation
+
+      - name: Dispatch centralized flutter-android tests
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SAUCE_APP_ID: ${{ needs.build-android.outputs.sauce_file_id }}
+          SOURCE_REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          jq -n --arg app "$SAUCE_APP_ID" --arg repo "$SOURCE_REPO" --arg sha "$SHA" --arg pr "$PR_NUMBER" \
+            '{event_type: "flutter-android-tests", client_payload: {sauce_app_id: $app, source_repo: $repo, sha: $sha, pr_number: $pr}}' \
+            | gh api -X POST repos/flexapp/sdk-test-automation/dispatches --input -
+          echo "Dispatched flutter-android-tests for $SOURCE_REPO@$SHA (Sauce app $SAUCE_APP_ID)"
+
+      - name: Dispatch centralized flutter-ios tests
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SAUCE_APP_ID: ${{ needs.build-ios.outputs.sauce_file_id }}
+          SOURCE_REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          jq -n --arg app "$SAUCE_APP_ID" --arg repo "$SOURCE_REPO" --arg sha "$SHA" --arg pr "$PR_NUMBER" \
+            '{event_type: "flutter-ios-tests", client_payload: {sauce_app_id: $app, source_repo: $repo, sha: $sha, pr_number: $pr}}' \
+            | gh api -X POST repos/flexapp/sdk-test-automation/dispatches --input -
+          echo "Dispatched flutter-ios-tests for $SOURCE_REPO@$SHA (Sauce app $SAUCE_APP_ID)"
+
+      # Test results come back as commit statuses from the central receivers, posted separately.
+      - name: Comment on PR — pipeline failed before tests ran
+        if: ${{ failure() && github.event_name == 'pull_request' }}
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: sauce-pipeline
+          message: |
+            ❌ **Sauce pipeline failed before finishing both dispatches.**
+
+            This job failed before dispatching one or both of the centralized `flutter-android` / `flutter-ios` suites — either during a host-app build (`build-android`/`build-ios` jobs above), or while minting the dispatch token / firing the dispatch itself. This is an infra/build failure, not a test failure — see the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for the specific step and error. **Check the `sdk-test-automation / flutter-android (Sauce)` and `sdk-test-automation / flutter-ios (Sauce)` commit statuses on this PR** — whichever already shows a result got out before this failure hit.
+
+            _When this job succeeds, test results post separately as those same commit statuses on this PR._
+
+      - name: Clear stale failure comment on success
+        if: ${{ success() && github.event_name == 'pull_request' }}
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: sauce-pipeline
+          delete: true
