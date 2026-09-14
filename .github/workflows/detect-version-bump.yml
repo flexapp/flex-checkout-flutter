@@ -1,0 +1,76 @@
+name: Detect version bump
+
+# Shared signal for "is this a release candidate?" so release-gate.yml and sauce-tests.yml can't
+# drift apart on the definition. Compares pubspec.yaml's top-level "version:" between base and
+# head SHA, which works for both pull_request and merge_group events.
+#
+# workflow_dispatch has no base/head pair to diff, so it always reports bumped=true.
+#
+# Reads via the contents API rather than a full checkout — no git history needed for a single-file
+# comparison, and this runs on every PR/merge-group entry.
+on:
+  workflow_call:
+    outputs:
+      version_bumped:
+        description: "'true' if pubspec.yaml's top-level \"version:\" differs between base and head (or this is a manual workflow_dispatch)"
+        value: ${{ jobs.detect.outputs.version_bumped }}
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    name: Compare pubspec.yaml version (base vs head)
+    runs-on: ubuntu-latest
+    outputs:
+      version_bumped: ${{ steps.check.outputs.bumped }}
+    steps:
+      - name: Compare version between base and head
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "Manual dispatch — no base/head pair to diff; always report bumped=true."
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -z "${BASE_SHA:-}" ] || [ -z "${HEAD_SHA:-}" ]; then
+            echo "::error::Missing base/head SHA for event '$EVENT_NAME' — can't diff version. Failing closed."
+            exit 1
+          fi
+
+          # pubspec.yaml's top-level "version:" is unindented (e.g. `version: 1.3.0`), unlike the
+          # nested `flex_checkout_flutter:` git-dependency block elsewhere in the file, so an
+          # anchored `^version:` match is unambiguous. `head -1` is a second guard in case a future
+          # edit ever introduces a second top-level-looking match. `cut -d: -f2-` (not `-f2`) so a
+          # build-metadata suffix containing its own colon (e.g. `1.3.0+build:2`) isn't truncated.
+          get_version() {
+            gh api "repos/$REPO/contents/pubspec.yaml?ref=$1" --jq '.content' \
+              | base64 -d | grep -E '^version:' | head -1 | cut -d: -f2- | tr -d '[:space:]'
+          }
+
+          # `|| true` on each: a failed API call or missing "version:" line would otherwise abort
+          # the script under `set -e` before the explicit -z check below runs.
+          BASE_VERSION=$(get_version "$BASE_SHA") || true
+          HEAD_VERSION=$(get_version "$HEAD_SHA") || true
+
+          if [ -z "$BASE_VERSION" ] || [ -z "$HEAD_VERSION" ]; then
+            echo "::error::Could not read version at base ($BASE_SHA) or head ($HEAD_SHA). Failing closed."
+            exit 1
+          fi
+
+          if [ "$BASE_VERSION" != "$HEAD_VERSION" ]; then
+            echo "version changed: $BASE_VERSION -> $HEAD_VERSION"
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "version unchanged ($BASE_VERSION)"
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+          fi

@@ -1,28 +1,42 @@
 name: flex-checkout-flutter / Sauce tests
 
 # Builds the centralized host app (sdk-test-automation :: example-apps/flutter-default, both
-# platforms) against this PR's plugin source, uploads to Sauce, and dispatches the centralized
-# suites. Results come back as informational commit statuses on the PR — this workflow doesn't
-# block on them.
+# platforms) against this PR's plugin source. On an ordinary feature PR this is BUILD-ONLY — no
+# Sauce upload, no dispatch, no paid device time — it just proves the PR's plugin source still
+# compiles into the host app (catches consumer-breaking API/packaging changes). The full suite
+# (upload + centralized Appium run) is reserved for the version-bump PR, which routes through
+# release-gate.yml instead — see detect-version-bump.yml.
 #
-# Mirrors flex-checkout-react-native's sauce-tests.yml (SDK-441) minus its version-bump split:
-# this repo has no release-gate workflow yet, so every PR dispatches. The build is a cross-repo
-# call into sdk-test-automation's build-flutter-{android,ios}-default.yml rather than a local
-# reimplementation, so the two copies can't drift apart. Reusable-workflow calls must be
-# job-level `uses:`, so each platform is its own job, with dispatch logic in a downstream job.
+# Escape hatch: a manual workflow_dispatch on THIS workflow still runs the full build + upload +
+# dispatch, exactly as before, so a risky feature PR can be opted into full Sauce coverage by hand.
+#
+# The build is a cross-repo call into sdk-test-automation's build-flutter-{android,ios}-default.yml
+# rather than a local reimplementation, so the two copies can't drift apart. Reusable-workflow
+# calls must be job-level `uses:`, so each platform is its own job, with dispatch/comment logic in
+# a separate downstream job.
 #
 # sdk_version here is a git ref of THIS repo (the build workflows rewrite the host app's pubspec
 # git dependency to it), so the PR head SHA builds the host app against exactly this PR's plugin
-# code — including its pinned native SDK versions.
+# code — including its pinned native SDK versions. No auth token is needed for this build
+# regardless of do_upload — flex-checkout-flutter is a public repo.
 #
-# Prereqs (same as RN's): sdk-test-automation allows org reusable-workflow access, and the Flex
-# CI GitHub App (FLEX_GH_APP_ID/KEY) is INSTALLED ON THIS REPO with Commit statuses: write and
-# Issues/Pull requests: write — the central receivers post results back through it.
+# Prereqs for the escape-hatch / version-bump upload path: sdk-test-automation allows org
+# reusable-workflow access, and the Flex CI GitHub App (FLEX_GH_APP_ID/KEY) is INSTALLED ON THIS
+# REPO with Commit statuses: write and Issues/Pull requests: write — the central receivers post
+# results back through it.
 #
 # Credentials forwarded via `secrets: inherit`: FLEX_CLIENT_ID_DEFAULT, FLEX_API_KEY_DEFAULT,
 # SAUCE_USERNAME, SAUCE_ACCESS_KEY, FLEX_GH_APP_ID, FLEX_GH_APP_KEY.
+#
+# merge_group: build-gate is intended as a required check (see its own comment below). Without
+# this trigger, a merge-queue entry never gets a check-run for build-gate at all, so a required
+# check waits forever and blocks the whole queue — same trap release-gate.yml's header already
+# warns about for itself. On an ordinary (non-bump) merge-group entry this runs build-only, same
+# as a normal PR; a bump merge-group entry is still excluded here and owned by release-gate.yml.
 on:
   pull_request:
+    branches: [main]
+  merge_group:
     branches: [main]
   workflow_dispatch:
 
@@ -30,41 +44,153 @@ permissions:
   contents: read
 
 jobs:
+  detect-version-bump:
+    uses: ./.github/workflows/detect-version-bump.yml
+
+  # Skip a version-bump PR — release-gate.yml handles those instead (full suite, blocking), so
+  # neither path dispatches twice against the org's 2-session Sauce ceiling. A failed
+  # detect-version-bump already skips this job (default "skip on failed needs"); build-gate below
+  # surfaces that failure loudly instead of leaving it silent.
   build-android:
-    name: Build + upload Android host app (vs PR plugin source)
+    name: Build Android host app (vs PR plugin source)
+    needs: detect-version-bump
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.detect-version-bump.outputs.version_bumped == 'false' }}
     concurrency:
       group: sauce-flutter-android-${{ github.head_ref || github.ref_name }}
       cancel-in-progress: true
     uses: flexapp/sdk-test-automation/.github/workflows/build-flutter-android-default.yml@main
     with:
       sdk_version: ${{ github.event.pull_request.head.sha || github.sha }}
-      do_upload: true
+      do_upload: ${{ github.event_name == 'workflow_dispatch' }}
     secrets: inherit
 
   build-ios:
-    name: Build + upload iOS host app (vs PR plugin source)
+    name: Build iOS host app (vs PR plugin source)
+    needs: detect-version-bump
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.detect-version-bump.outputs.version_bumped == 'false' }}
     concurrency:
       group: sauce-flutter-ios-${{ github.head_ref || github.ref_name }}
       cancel-in-progress: true
     uses: flexapp/sdk-test-automation/.github/workflows/build-flutter-ios-default.yml@main
     with:
       sdk_version: ${{ github.event.pull_request.head.sha || github.sha }}
-      do_upload: true
+      do_upload: ${{ github.event_name == 'workflow_dispatch' }}
     secrets: inherit
 
+  # Reports build health on the everyday (build-only) path, where `dispatch` below doesn't run at
+  # all. Runs under bare always() so it never silently skips, and is therefore the one honest
+  # required-check candidate in this file.
+  build-gate:
+    name: Host app builds (build-only)
+    needs: [detect-version-bump, build-android, build-ios]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # sticky PR comment when the build itself breaks
+    steps:
+      # '!= success' (not narrowly '== failure') so a cancelled/timed-out detection run still
+      # gates instead of reporting green with no idea which workflow owns the PR (Codex review).
+      - name: Fail loudly — version-bump detection itself didn't succeed
+        id: detect-check
+        if: ${{ needs.detect-version-bump.result != 'success' }}
+        run: |
+          echo "::error::detect-version-bump result=${{ needs.detect-version-bump.result }}, so we can't tell whether release-gate.yml covers this PR instead. Failing loudly rather than silently skipping."
+          exit 1
+
+      # `!= 'success'` (not narrowly '== failure') so a cancelled build (e.g. superseded by this
+      # job's own cancel-in-progress concurrency group) still gates, instead of silently passing.
+      #
+      # The middle clause mirrors build-android/build-ios's OWN `if:` exactly — evaluate build
+      # results whenever those jobs actually ran, which is workflow_dispatch OR the ordinary
+      # feature-PR path (version_bumped=='false'). It must NOT exclude workflow_dispatch: builds
+      # run (and can genuinely fail) on the manual escape-hatch path too, and this job is the
+      # intended required check — if this predicate excluded workflow_dispatch, a failed manual
+      # run would report build-gate green while only the non-required `dispatch` job went red
+      # (Codex review). On the automatic release path (bumped==true, not workflow_dispatch) the
+      # mirrored condition is false, build-android/build-ios are genuinely 'skipped' there, and
+      # release-gate.yml owns testing instead — so '!= success' still can't misfire there.
+      - name: Fail if either host-app build broke
+        id: build-check
+        if: >-
+          ${{ needs.detect-version-bump.result == 'success' &&
+              (github.event_name == 'workflow_dispatch' || needs.detect-version-bump.outputs.version_bumped == 'false') &&
+              (needs.build-android.result != 'success' || needs.build-ios.result != 'success') }}
+        run: |
+          echo "::error::build-android=${{ needs.build-android.result }} build-ios=${{ needs.build-ios.result }} — this PR breaks the centralized host app (consumer-visible API/packaging change)."
+          exit 1
+
+      # Two comment variants, gated on which check above actually fired (only one ever runs) —
+      # a detect-version-bump infra failure is not a compile failure, and the comment shouldn't
+      # claim otherwise.
+      - name: Comment on PR — host app build broke
+        if: ${{ failure() && steps.build-check.conclusion == 'failure' && github.event_name == 'pull_request' }}
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: sauce-buildgate
+          message: |
+            ❌ **This PR's plugin source no longer compiles into the centralized host app.**
+
+            See the failed `build-android` / `build-ios` job above for the specific error. On the
+            ordinary (build-only) path this is a build/packaging failure caught on a feature
+            PR — the full Appium suite only runs on the version-bump (release) PR via
+            `release-gate.yml`. If this run was a manual `workflow_dispatch`, the host app itself
+            failed to build, so the full suite below was never dispatched either — check the
+            `dispatch` job for that half of the run.
+
+      - name: Comment on PR — build-only pipeline failed before it could report
+        if: ${{ failure() && steps.detect-check.conclusion == 'failure' && github.event_name == 'pull_request' }}
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: sauce-buildgate
+          message: |
+            ❌ **The build-only check failed before it could tell whether this PR's plugin source compiles.**
+
+            `detect-version-bump` (which decides whether `release-gate.yml` should own this PR
+            instead) itself failed — see the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for the specific error. This is an infra failure, not a build/compile failure.
+
+      - name: Clear stale failure comment on success
+        if: ${{ success() && github.event_name == 'pull_request' }}
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: sauce-buildgate
+          delete: true
+
+      # `dispatch` below only runs on detection-failure or workflow_dispatch, so once detection
+      # recovers on an ordinary feature PR, `dispatch` is skipped entirely and its own cleanup
+      # step never runs — leaving a stale "pipeline failed" comment from a prior failed push
+      # sitting on the PR indefinitely (Codex review). build-gate runs every time (always()), so
+      # it's the one reliable place to clear that header too.
+      - name: Clear stale pipeline-failure comment from a previous run
+        if: ${{ success() && github.event_name == 'pull_request' }}
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: sauce-pipeline
+          delete: true
+
+  # Full suite path only: manual workflow_dispatch (escape hatch), or detection itself didn't
+  # succeed. An ordinary feature PR never enters this job — build-gate above covers it instead.
+  #
+  # '!= success' (not narrowly '== failure') here and below, for the same reason as build-gate's
+  # detect-check: a cancelled/timed-out detection run must still be treated as "can't tell which
+  # workflow owns this PR," not silently skip this job with no signal at all.
   dispatch:
     name: Dispatch centralized tests
-    needs: [build-android, build-ios]
-    # always(): without it, GitHub skips this job outright when a `needs` dependency failed,
-    # which would leave a broken build with zero PR signal beyond the build job itself.
-    if: ${{ always() }}
+    needs: [detect-version-bump, build-android, build-ios]
+    if: ${{ always() && (needs.detect-version-bump.result != 'success' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write # sticky PR comment when the build/dispatch fails before tests run
     steps:
+      - name: Fail loudly — version-bump detection itself didn't succeed
+        if: ${{ needs.detect-version-bump.result != 'success' }}
+        run: |
+          echo "::error::detect-version-bump result=${{ needs.detect-version-bump.result }}, so we can't tell whether this PR bumps the SDK version (and therefore whether release-gate.yml already covers it). Failing loudly rather than silently skipping Sauce testing for this PR."
+          exit 1
+
       - name: Fail loudly if either build job didn't succeed
-        if: ${{ needs.build-android.result != 'success' || needs.build-ios.result != 'success' }}
+        if: ${{ needs.detect-version-bump.result == 'success' && (needs.build-android.result != 'success' || needs.build-ios.result != 'success') }}
         run: |
           echo "::error::build-android=${{ needs.build-android.result }} build-ios=${{ needs.build-ios.result }} — at least one host-app build failed, so its suite was never dispatched."
           exit 1
