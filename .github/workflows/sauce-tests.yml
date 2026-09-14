@@ -89,26 +89,32 @@ jobs:
       contents: read
       pull-requests: write # sticky PR comment when the build itself breaks
     steps:
-      - name: Fail loudly — version-bump detection itself failed
+      # '!= success' (not narrowly '== failure') so a cancelled/timed-out detection run still
+      # gates instead of reporting green with no idea which workflow owns the PR (Codex review).
+      - name: Fail loudly — version-bump detection itself didn't succeed
         id: detect-check
-        if: ${{ needs.detect-version-bump.result == 'failure' }}
+        if: ${{ needs.detect-version-bump.result != 'success' }}
         run: |
-          echo "::error::detect-version-bump failed, so we can't tell whether release-gate.yml covers this PR instead. Failing loudly rather than silently skipping."
+          echo "::error::detect-version-bump result=${{ needs.detect-version-bump.result }}, so we can't tell whether release-gate.yml covers this PR instead. Failing loudly rather than silently skipping."
           exit 1
 
       # `!= 'success'` (not narrowly '== failure') so a cancelled build (e.g. superseded by this
       # job's own cancel-in-progress concurrency group) still gates, instead of silently passing.
-      # Safe here specifically because this condition is already gated to the feature-PR path
-      # (version_bumped=='false' && not workflow_dispatch) — on THAT path build-android/build-ios
-      # cannot resolve to 'skipped' (their own `if:` guarantees they run whenever this evaluates),
-      # so '!= success' can't misfire the way it would on the release-PR path, where they ARE
-      # skipped and release-gate.yml owns testing instead.
-      - name: Fail if either host-app build broke (feature-PR build-only path)
+      #
+      # The middle clause mirrors build-android/build-ios's OWN `if:` exactly — evaluate build
+      # results whenever those jobs actually ran, which is workflow_dispatch OR the ordinary
+      # feature-PR path (version_bumped=='false'). It must NOT exclude workflow_dispatch: builds
+      # run (and can genuinely fail) on the manual escape-hatch path too, and this job is the
+      # intended required check — if this predicate excluded workflow_dispatch, a failed manual
+      # run would report build-gate green while only the non-required `dispatch` job went red
+      # (Codex review). On the automatic release path (bumped==true, not workflow_dispatch) the
+      # mirrored condition is false, build-android/build-ios are genuinely 'skipped' there, and
+      # release-gate.yml owns testing instead — so '!= success' still can't misfire there.
+      - name: Fail if either host-app build broke
         id: build-check
         if: >-
           ${{ needs.detect-version-bump.result == 'success' &&
-              github.event_name != 'workflow_dispatch' &&
-              needs.detect-version-bump.outputs.version_bumped == 'false' &&
+              (github.event_name == 'workflow_dispatch' || needs.detect-version-bump.outputs.version_bumped == 'false') &&
               (needs.build-android.result != 'success' || needs.build-ios.result != 'success') }}
         run: |
           echo "::error::build-android=${{ needs.build-android.result }} build-ios=${{ needs.build-ios.result }} — this PR breaks the centralized host app (consumer-visible API/packaging change)."
@@ -125,10 +131,12 @@ jobs:
           message: |
             ❌ **This PR's plugin source no longer compiles into the centralized host app.**
 
-            See the failed `build-android` / `build-ios` job above for the specific error. This is a
-            build/packaging failure caught on a feature PR — the full Appium suite only runs on the
-            version-bump (release) PR via `release-gate.yml`, or on a manual `workflow_dispatch` of
-            this workflow.
+            See the failed `build-android` / `build-ios` job above for the specific error. On the
+            ordinary (build-only) path this is a build/packaging failure caught on a feature
+            PR — the full Appium suite only runs on the version-bump (release) PR via
+            `release-gate.yml`. If this run was a manual `workflow_dispatch`, the host app itself
+            failed to build, so the full suite below was never dispatched either — check the
+            `dispatch` job for that half of the run.
 
       - name: Comment on PR — build-only pipeline failed before it could report
         if: ${{ failure() && steps.detect-check.conclusion == 'failure' && github.event_name == 'pull_request' }}
@@ -146,6 +154,18 @@ jobs:
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: sauce-buildgate
+          delete: true
+
+      # `dispatch` below only runs on detection-failure or workflow_dispatch, so once detection
+      # recovers on an ordinary feature PR, `dispatch` is skipped entirely and its own cleanup
+      # step never runs — leaving a stale "pipeline failed" comment from a prior failed push
+      # sitting on the PR indefinitely (Codex review). build-gate runs every time (always()), so
+      # it's the one reliable place to clear that header too.
+      - name: Clear stale pipeline-failure comment from a previous run
+        if: ${{ success() && github.event_name == 'pull_request' }}
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: sauce-pipeline
           delete: true
 
   # Full suite path only: manual workflow_dispatch (escape hatch), or detection itself failed.
