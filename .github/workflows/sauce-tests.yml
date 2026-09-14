@@ -106,7 +106,7 @@ jobs:
       # a detect-version-bump infra failure is not a compile failure, and the comment shouldn't
       # claim otherwise.
       - name: Comment on PR — host app build broke
-        if: ${{ steps.build-check.conclusion == 'failure' && github.event_name == 'pull_request' }}
+        if: ${{ failure() && steps.build-check.conclusion == 'failure' && github.event_name == 'pull_request' }}
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: sauce-buildgate
@@ -119,7 +119,7 @@ jobs:
             this workflow.
 
       - name: Comment on PR — build-only pipeline failed before it could report
-        if: ${{ steps.detect-check.conclusion == 'failure' && github.event_name == 'pull_request' }}
+        if: ${{ failure() && steps.detect-check.conclusion == 'failure' && github.event_name == 'pull_request' }}
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: sauce-buildgate
