@@ -82,6 +82,7 @@ jobs:
       pull-requests: write # sticky PR comment when the build itself breaks
     steps:
       - name: Fail loudly — version-bump detection itself failed
+        id: detect-check
         if: ${{ needs.detect-version-bump.result == 'failure' }}
         run: |
           echo "::error::detect-version-bump failed, so we can't tell whether release-gate.yml covers this PR instead. Failing loudly rather than silently skipping."
@@ -91,6 +92,7 @@ jobs:
       # are SKIPPED (their own `if:` above excludes it), and release-gate.yml owns testing there.
       # `!= 'success'` would incorrectly red-flag every release PR here.
       - name: Fail if either host-app build broke (feature-PR build-only path)
+        id: build-check
         if: >-
           ${{ needs.detect-version-bump.result == 'success' &&
               github.event_name != 'workflow_dispatch' &&
@@ -100,8 +102,11 @@ jobs:
           echo "::error::build-android=${{ needs.build-android.result }} build-ios=${{ needs.build-ios.result }} — this PR breaks the centralized host app (consumer-visible API/packaging change)."
           exit 1
 
+      # Two comment variants, gated on which check above actually fired (only one ever runs) —
+      # a detect-version-bump infra failure is not a compile failure, and the comment shouldn't
+      # claim otherwise.
       - name: Comment on PR — host app build broke
-        if: ${{ failure() && github.event_name == 'pull_request' }}
+        if: ${{ steps.build-check.conclusion == 'failure' && github.event_name == 'pull_request' }}
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: sauce-buildgate
@@ -112,6 +117,17 @@ jobs:
             build/packaging failure caught on a feature PR — the full Appium suite only runs on the
             version-bump (release) PR via `release-gate.yml`, or on a manual `workflow_dispatch` of
             this workflow.
+
+      - name: Comment on PR — build-only pipeline failed before it could report
+        if: ${{ steps.detect-check.conclusion == 'failure' && github.event_name == 'pull_request' }}
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: sauce-buildgate
+          message: |
+            ❌ **The build-only check failed before it could tell whether this PR's plugin source compiles.**
+
+            `detect-version-bump` (which decides whether `release-gate.yml` should own this PR
+            instead) itself failed — see the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for the specific error. This is an infra failure, not a build/compile failure.
 
       - name: Clear stale failure comment on success
         if: ${{ success() && github.event_name == 'pull_request' }}
