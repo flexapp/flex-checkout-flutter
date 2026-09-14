@@ -168,21 +168,25 @@ jobs:
           header: sauce-pipeline
           delete: true
 
-  # Full suite path only: manual workflow_dispatch (escape hatch), or detection itself failed.
-  # An ordinary feature PR never enters this job — build-gate above covers it instead.
+  # Full suite path only: manual workflow_dispatch (escape hatch), or detection itself didn't
+  # succeed. An ordinary feature PR never enters this job — build-gate above covers it instead.
+  #
+  # '!= success' (not narrowly '== failure') here and below, for the same reason as build-gate's
+  # detect-check: a cancelled/timed-out detection run must still be treated as "can't tell which
+  # workflow owns this PR," not silently skip this job with no signal at all.
   dispatch:
     name: Dispatch centralized tests
     needs: [detect-version-bump, build-android, build-ios]
-    if: ${{ always() && (needs.detect-version-bump.result == 'failure' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ always() && (needs.detect-version-bump.result != 'success' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write # sticky PR comment when the build/dispatch fails before tests run
     steps:
-      - name: Fail loudly — version-bump detection itself failed
-        if: ${{ needs.detect-version-bump.result == 'failure' }}
+      - name: Fail loudly — version-bump detection itself didn't succeed
+        if: ${{ needs.detect-version-bump.result != 'success' }}
         run: |
-          echo "::error::detect-version-bump failed, so we can't tell whether this PR bumps the SDK version (and therefore whether release-gate.yml already covers it). Failing loudly rather than silently skipping Sauce testing for this PR."
+          echo "::error::detect-version-bump result=${{ needs.detect-version-bump.result }}, so we can't tell whether this PR bumps the SDK version (and therefore whether release-gate.yml already covers it). Failing loudly rather than silently skipping Sauce testing for this PR."
           exit 1
 
       - name: Fail loudly if either build job didn't succeed
