@@ -1,0 +1,224 @@
+name: Release gate (Sauce e2e)
+
+# Blocking Sauce e2e gate for release-candidate PRs (any PR/merge-queue entry that bumps
+# pubspec.yaml's top-level "version:" — see detect-version-bump.yml). Builds the flutter host app
+# for both platforms against this PR's plugin source, uploads to Sauce, dispatches both suites,
+# and polls both results — failing if either is red, so a release candidate can't merge until
+# both pass.
+#
+# build-android/build-ios are separate jobs, not steps inside release-gate: a reusable-workflow
+# call can only be a job-level `uses:`, never a step mixed into a job that also runs scripts. The
+# baseline/dispatch/poll logic reads their outputs via `needs.build-android.outputs.*`.
+#
+# This repo has no release.yml / publish workflow — unlike flex-checkout-android-core and
+# flex-checkout-react-native, this gate blocks the MERGE but has nothing downstream consuming its
+# result yet, and there is no RELEASE_GATE_OVERRIDE break-glass path. Still worth having: it's
+# what makes "full suite on release PRs" actually true for this repo, and it's a pure PR check.
+#
+# To actually block merges, add the "Sauce e2e gate (release)" check as required in branch
+# protection — not done by this PR; it can't be selected until it's reported once. Ordinary PRs
+# are handled by sauce-tests.yml instead (build-only), so neither suite dispatches twice on the
+# same PR.
+#
+# merge_group: without this trigger, a required check never gets a check-run for the merge queue's
+# synthetic ref, so it waits forever and blocks the whole queue. Kept even though this repo has no
+# merge queue configured today — it's free when unused, and this is also why detect-version-bump
+# diffs SHAs rather than sniffing a branch name (merge_group events have no usable head_ref).
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+    branches: [main]
+  workflow_dispatch: # manual re-run against a release branch
+
+permissions:
+  contents: read
+  statuses: read # poll this repo's own commit status posted back by the central receivers
+
+jobs:
+  detect-version-bump:
+    uses: ./.github/workflows/detect-version-bump.yml
+
+  # Skipped on detection failure (default "skip on failed needs") and on ordinary PRs — the
+  # release-gate job below handles the loud failure case. Concurrency group matches
+  # sauce-tests.yml's build-android job so a manual release-gate dispatch racing it on the same
+  # branch serializes instead of both firing Android builds at once.
+  build-android:
+    name: Build + upload Android host app (release candidate's plugin source)
+    needs: detect-version-bump
+    if: ${{ needs.detect-version-bump.outputs.version_bumped == 'true' }}
+    concurrency:
+      group: sauce-flutter-android-${{ github.head_ref || github.ref_name }}
+      cancel-in-progress: true
+    uses: flexapp/sdk-test-automation/.github/workflows/build-flutter-android-default.yml@main
+    with:
+      sdk_version: ${{ github.event.pull_request.head.sha || github.sha }}
+      do_upload: true
+    secrets: inherit
+
+  build-ios:
+    name: Build + upload iOS host app (release candidate's plugin source)
+    needs: detect-version-bump
+    if: ${{ needs.detect-version-bump.outputs.version_bumped == 'true' }}
+    concurrency:
+      group: sauce-flutter-ios-${{ github.head_ref || github.ref_name }}
+      cancel-in-progress: true
+    uses: flexapp/sdk-test-automation/.github/workflows/build-flutter-ios-default.yml@main
+    with:
+      sdk_version: ${{ github.event.pull_request.head.sha || github.sha }}
+      do_upload: true
+    secrets: inherit
+
+  release-gate:
+    name: Sauce e2e gate (release)
+    needs: [detect-version-bump, build-android, build-ios]
+    # Release-candidate PRs only; sauce-tests.yml gates everything else. always() is required
+    # here: a skipped required check counts as passing for branch protection, so a transient
+    # detect-version-bump failure must not silently downgrade "must run and pass" into "skipped."
+    if: ${{ always() && (needs.detect-version-bump.result == 'failure' || needs.detect-version-bump.outputs.version_bumped == 'true') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: read
+    # Setup headroom + the ~50m poll below; the builds run in separate parallel jobs.
+    timeout-minutes: 100
+    steps:
+      - name: Fail closed — version-bump detection itself failed
+        if: ${{ needs.detect-version-bump.result == 'failure' }}
+        run: |
+          echo "::error::detect-version-bump failed, so we can't safely tell whether this is a release candidate. Failing this REQUIRED check rather than letting it be silently skipped-as-passing."
+          exit 1
+
+      - name: Fail closed if either build job didn't succeed
+        if: ${{ needs.detect-version-bump.result == 'success' && (needs.build-android.result != 'success' || needs.build-ios.result != 'success') }}
+        run: |
+          echo "::error::build-android=${{ needs.build-android.result }} build-ios=${{ needs.build-ios.result }} — at least one host-app build failed, so its suite was never dispatched. Blocking this REQUIRED check."
+          exit 1
+
+      - name: Mint GitHub App token (dispatch on sdk-test-automation)
+        id: app-token
+        timeout-minutes: 5
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.FLEX_GH_APP_ID }}
+          private-key: ${{ secrets.FLEX_GH_APP_KEY }}
+          owner: flexapp
+          repositories: sdk-test-automation
+
+      - name: Capture pre-dispatch status baselines
+        id: baseline
+        # Records each context's latest status id before dispatching, so a re-run of this gate
+        # doesn't mistake a stale status for this run's result. Fails closed if unreadable.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -uo pipefail
+          ANDROID_CONTEXT="sdk-test-automation / flutter-android (Sauce)"
+          IOS_CONTEXT="sdk-test-automation / flutter-ios (Sauce)"
+          RESULT=""
+          for a in 1 2 3; do
+            RESULT=$(gh api "repos/${{ github.repository }}/commits/$SHA/status" --jq "
+              {
+                android: ([.statuses[] | select(.context==\"$ANDROID_CONTEXT\")] | (max_by(.id).id // 0)),
+                ios: ([.statuses[] | select(.context==\"$IOS_CONTEXT\")] | (max_by(.id).id // 0))
+              }" 2>/dev/null) && break
+            echo "baseline read attempt $a failed; retrying in 5s…"; sleep 5; RESULT=""
+          done
+          if [ -z "$RESULT" ]; then
+            echo "::error::Could not read the pre-dispatch status baselines for $SHA after 3 attempts — blocking (can't safely distinguish a stale status from this run's result)."
+            exit 1
+          fi
+          ANDROID_BID=$(printf '%s' "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['android'])")
+          IOS_BID=$(printf '%s' "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['ios'])")
+          echo "Pre-dispatch baseline status ids — android: $ANDROID_BID, ios: $IOS_BID"
+          echo "android_baseline_status_id=$ANDROID_BID" >> "$GITHUB_OUTPUT"
+          echo "ios_baseline_status_id=$IOS_BID" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch centralized flutter-android tests (release candidate)
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SAUCE_APP_ID: ${{ needs.build-android.outputs.sauce_file_id }}
+          SOURCE_REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          jq -n --arg app "$SAUCE_APP_ID" --arg repo "$SOURCE_REPO" --arg sha "$SHA" --arg pr "$PR_NUMBER" \
+            '{event_type: "flutter-android-tests", client_payload: {sauce_app_id: $app, source_repo: $repo, sha: $sha, pr_number: $pr}}' \
+            | gh api -X POST repos/flexapp/sdk-test-automation/dispatches --input -
+          echo "Dispatched flutter-android-tests for $SOURCE_REPO@$SHA (Sauce app $SAUCE_APP_ID)"
+
+      - name: Dispatch centralized flutter-ios tests (release candidate)
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SAUCE_APP_ID: ${{ needs.build-ios.outputs.sauce_file_id }}
+          SOURCE_REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          jq -n --arg app "$SAUCE_APP_ID" --arg repo "$SOURCE_REPO" --arg sha "$SHA" --arg pr "$PR_NUMBER" \
+            '{event_type: "flutter-ios-tests", client_payload: {sauce_app_id: $app, source_repo: $repo, sha: $sha, pr_number: $pr}}' \
+            | gh api -X POST repos/flexapp/sdk-test-automation/dispatches --input -
+          echo "Dispatched flutter-ios-tests for $SOURCE_REPO@$SHA (Sauce app $SAUCE_APP_ID)"
+
+      - name: Wait for both centralized suite results (BLOCKING)
+        # Polls both contexts in one loop; fails as soon as either suite reports red or times out.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ANDROID_BASELINE_ID: ${{ steps.baseline.outputs.android_baseline_status_id }}
+          IOS_BASELINE_ID: ${{ steps.baseline.outputs.ios_baseline_status_id }}
+        run: |
+          set -uo pipefail
+          ANDROID_CONTEXT="sdk-test-automation / flutter-android (Sauce)"
+          IOS_CONTEXT="sdk-test-automation / flutter-ios (Sauce)"
+          MAX_ATTEMPTS=300  # 300 x 10s = ~50m; job cap (100m) leaves setup headroom
+          GRACE_ATTEMPTS=90 # ~15m before concluding a dispatch never landed (queued receiver tolerance)
+          echo "Polling '$ANDROID_CONTEXT' (baseline $ANDROID_BASELINE_ID) and '$IOS_CONTEXT' (baseline $IOS_BASELINE_ID) on $SHA…"
+          android_seen=0; ios_seen=0
+          android_done=""; ios_done=""
+          for i in $(seq 1 "$MAX_ATTEMPTS"); do
+            STATUSES=$(gh api "repos/${{ github.repository }}/commits/$SHA/status" --jq "
+              {
+                android: ([.statuses[] | select(.context==\"$ANDROID_CONTEXT\") | select(.id > ${ANDROID_BASELINE_ID:-0})] | (max_by(.id).state // \"\")),
+                ios: ([.statuses[] | select(.context==\"$IOS_CONTEXT\") | select(.id > ${IOS_BASELINE_ID:-0})] | (max_by(.id).state // \"\"))
+              }" 2>/dev/null || true)
+            ANDROID_STATE=$(printf '%s' "${STATUSES:-{}}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('android',''))" 2>/dev/null || true)
+            IOS_STATE=$(printf '%s' "${STATUSES:-{}}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('ios',''))" 2>/dev/null || true)
+            [ -n "$ANDROID_STATE" ] && android_seen=1
+            [ -n "$IOS_STATE" ] && ios_seen=1
+
+            case "$ANDROID_STATE" in
+              failure|error)
+                echo "::error::Centralized flutter-android suite reported state=$ANDROID_STATE — blocking the release PR."
+                exit 1 ;;
+              success) android_done=success ;;
+            esac
+            case "$IOS_STATE" in
+              failure|error)
+                echo "::error::Centralized flutter-ios suite reported state=$IOS_STATE — blocking the release PR."
+                exit 1 ;;
+              success) ios_done=success ;;
+            esac
+
+            if [ "$android_done" = success ] && [ "$ios_done" = success ]; then
+              echo "::notice::Both centralized flutter suites PASSED — release candidate may merge."
+              exit 0
+            fi
+
+            # No status within the grace window means the dispatch likely never reached its receiver.
+            if [ "$android_seen" -eq 0 ] && [ "$i" -ge "$GRACE_ATTEMPTS" ]; then
+              echo "::error::No '$ANDROID_CONTEXT' status on $SHA after ~15m — the dispatch likely never reached the receiver. Blocking (the suite did not run)."
+              exit 1
+            fi
+            if [ "$ios_seen" -eq 0 ] && [ "$i" -ge "$GRACE_ATTEMPTS" ]; then
+              echo "::error::No '$IOS_CONTEXT' status on $SHA after ~15m — the dispatch likely never reached the receiver. Blocking (the suite did not run)."
+              exit 1
+            fi
+            echo "android=${ANDROID_STATE:-<none yet>} ios=${IOS_STATE:-<none yet>} — waiting (attempt $i/$MAX_ATTEMPTS)"
+            sleep 10
+          done
+          echo "::error::Timed out (~50m) waiting for both suites to finish — blocking the release PR."
+          exit 1
