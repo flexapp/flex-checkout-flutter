@@ -27,8 +27,16 @@ name: flex-checkout-flutter / Sauce tests
 #
 # Credentials forwarded via `secrets: inherit`: FLEX_CLIENT_ID_DEFAULT, FLEX_API_KEY_DEFAULT,
 # SAUCE_USERNAME, SAUCE_ACCESS_KEY, FLEX_GH_APP_ID, FLEX_GH_APP_KEY.
+#
+# merge_group: build-gate is intended as a required check (see its own comment below). Without
+# this trigger, a merge-queue entry never gets a check-run for build-gate at all, so a required
+# check waits forever and blocks the whole queue — same trap release-gate.yml's header already
+# warns about for itself. On an ordinary (non-bump) merge-group entry this runs build-only, same
+# as a normal PR; a bump merge-group entry is still excluded here and owned by release-gate.yml.
 on:
   pull_request:
+    branches: [main]
+  merge_group:
     branches: [main]
   workflow_dispatch:
 
@@ -88,16 +96,20 @@ jobs:
           echo "::error::detect-version-bump failed, so we can't tell whether release-gate.yml covers this PR instead. Failing loudly rather than silently skipping."
           exit 1
 
-      # NOTE: '== failure', not '!= success' — on the version-bump path build-android/build-ios
-      # are SKIPPED (their own `if:` above excludes it), and release-gate.yml owns testing there.
-      # `!= 'success'` would incorrectly red-flag every release PR here.
+      # `!= 'success'` (not narrowly '== failure') so a cancelled build (e.g. superseded by this
+      # job's own cancel-in-progress concurrency group) still gates, instead of silently passing.
+      # Safe here specifically because this condition is already gated to the feature-PR path
+      # (version_bumped=='false' && not workflow_dispatch) — on THAT path build-android/build-ios
+      # cannot resolve to 'skipped' (their own `if:` guarantees they run whenever this evaluates),
+      # so '!= success' can't misfire the way it would on the release-PR path, where they ARE
+      # skipped and release-gate.yml owns testing instead.
       - name: Fail if either host-app build broke (feature-PR build-only path)
         id: build-check
         if: >-
           ${{ needs.detect-version-bump.result == 'success' &&
               github.event_name != 'workflow_dispatch' &&
               needs.detect-version-bump.outputs.version_bumped == 'false' &&
-              (needs.build-android.result == 'failure' || needs.build-ios.result == 'failure') }}
+              (needs.build-android.result != 'success' || needs.build-ios.result != 'success') }}
         run: |
           echo "::error::build-android=${{ needs.build-android.result }} build-ios=${{ needs.build-ios.result }} — this PR breaks the centralized host app (consumer-visible API/packaging change)."
           exit 1
