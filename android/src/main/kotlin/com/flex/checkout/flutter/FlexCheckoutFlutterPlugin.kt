@@ -172,8 +172,10 @@ class FlexCheckoutFlutterPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
                         if (!token.isNullOrEmpty()) {
                             continuation.resume(token)
                         } else {
+                            // SDK-326: match the core SDKs' empty-token copy so the wrapped
+                            // "Failed to load token: ..." message is identical across platforms.
                             continuation.resumeWithException(
-                                IllegalStateException("Dart tokenLoader returned empty token")
+                                IllegalStateException("Token loader returned an empty token")
                             )
                         }
                     }
