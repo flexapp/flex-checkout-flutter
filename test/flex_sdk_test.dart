@@ -17,6 +17,10 @@ void main() {
         ModalEventType.fromRawValue('MODAL_AUTOPAY_STATUS_UPDATED'),
         ModalEventType.autopayStatusUpdated,
       );
+      expect(
+        ModalEventType.fromRawValue('MODAL_ADDITIONAL_VERIFICATION_REQUIRED'),
+        ModalEventType.additionalVerificationRequired,
+      );
     });
 
     test('throws on unknown raw value', () {

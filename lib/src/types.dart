@@ -18,13 +18,19 @@ enum ModalEventType {
 
   /// The user updated their autopay status mid-flow. Non-terminal: the
   /// checkout stays open after this event.
-  autopayStatusUpdated;
+  autopayStatusUpdated,
+
+  /// Additional verification is required before the flow can proceed.
+  /// Non-terminal: the checkout stays open after this event.
+  additionalVerificationRequired;
 
   static ModalEventType fromRawValue(String value) {
     return switch (value) {
       'MODAL_ONBOARDING_COMPLETED' => ModalEventType.onboardingCompleted,
       'MODAL_PAYMENT_COMPLETED' => ModalEventType.paymentCompleted,
       'MODAL_AUTOPAY_STATUS_UPDATED' => ModalEventType.autopayStatusUpdated,
+      'MODAL_ADDITIONAL_VERIFICATION_REQUIRED' =>
+        ModalEventType.additionalVerificationRequired,
       _ => throw ArgumentError('Unknown ModalEventType: $value'),
     };
   }
