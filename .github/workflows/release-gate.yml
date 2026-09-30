@@ -50,11 +50,10 @@ jobs:
     concurrency:
       group: sauce-flutter-android-${{ github.head_ref || github.ref_name }}
       cancel-in-progress: true
-    uses: flexapp/sdk-test-automation/.github/workflows/build-flutter-android-default.yml@main
+    uses: ./.github/workflows/build-flutter-android-default.yml
     with:
       sdk_version: ${{ github.event.pull_request.head.sha || github.sha }}
       do_upload: true
-    secrets: inherit
 
   build-ios:
     name: Build + upload iOS host app (release candidate's plugin source)
@@ -63,11 +62,10 @@ jobs:
     concurrency:
       group: sauce-flutter-ios-${{ github.head_ref || github.ref_name }}
       cancel-in-progress: true
-    uses: flexapp/sdk-test-automation/.github/workflows/build-flutter-ios-default.yml@main
+    uses: ./.github/workflows/build-flutter-ios-default.yml
     with:
       sdk_version: ${{ github.event.pull_request.head.sha || github.sha }}
       do_upload: true
-    secrets: inherit
 
   release-gate:
     name: Sauce e2e gate (release)

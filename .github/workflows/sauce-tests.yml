@@ -58,11 +58,10 @@ jobs:
     concurrency:
       group: sauce-flutter-android-${{ github.head_ref || github.ref_name }}
       cancel-in-progress: true
-    uses: flexapp/sdk-test-automation/.github/workflows/build-flutter-android-default.yml@main
+    uses: ./.github/workflows/build-flutter-android-default.yml
     with:
       sdk_version: ${{ github.event.pull_request.head.sha || github.sha }}
       do_upload: ${{ github.event_name == 'workflow_dispatch' }}
-    secrets: inherit
 
   build-ios:
     name: Build iOS host app (vs PR plugin source)
@@ -71,11 +70,10 @@ jobs:
     concurrency:
       group: sauce-flutter-ios-${{ github.head_ref || github.ref_name }}
       cancel-in-progress: true
-    uses: flexapp/sdk-test-automation/.github/workflows/build-flutter-ios-default.yml@main
+    uses: ./.github/workflows/build-flutter-ios-default.yml
     with:
       sdk_version: ${{ github.event.pull_request.head.sha || github.sha }}
       do_upload: ${{ github.event_name == 'workflow_dispatch' }}
-    secrets: inherit
 
   # Reports build health on the everyday (build-only) path, where `dispatch` below doesn't run at
   # all. Runs under bare always() so it never silently skips, and is therefore the one honest

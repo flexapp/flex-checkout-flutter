@@ -1,0 +1,283 @@
+name: Build flutter-default example app (Android)
+
+# Builds the Android APK half of the flutter-default host app (embedding the PUBLISHED
+# flex_checkout_flutter plugin, which pulls in the native Android SDK transitively via JitPack).
+# On pull_request it is a BUILD-ONLY compile gate (no Sauce upload, no secrets required) so a PR
+# that breaks the app fails here — not inside a paid Sauce session. On workflow_dispatch /
+# workflow_call it ALSO uploads the APK to Sauce (the test workflow consumes the sauce_file_id).
+# Structurally mirrors build-react-native-android-default.yml; only the Flutter toolchain, the
+# git-dependency version override, and the APK naming differ here.
+#
+# flex_checkout_flutter is consumed as a GIT dependency pinned to a release tag (its documented
+# consumption path — the package is not on pub.dev), so sdk_version here is a git ref (tag, branch,
+# or SHA), not npm semver. The repo is PUBLIC, so — unlike react-native-default's private npm
+# package — no auth secret is needed to install it and the PR compile gate stays secret-free.
+#
+# RELEASE, not debug: a debug-mode Flutter APK runs the Dart VM with JIT + a debug banner and
+# expects a host-side tool connection; release is AOT and self-contained (same spirit as the RN
+# workflow's release-only rule). Signed with the committed debug keystore (app/debug.keystore) —
+# there is no production release channel for this host app, only Sauce test builds.
+#
+# No flex_sdk_ref (source-build) input yet — deliberately deferred to the follow-up ticket
+# (SDK-443): a source build here would need a two-level substitution (the Flutter plugin AND the
+# native Android core it pulls from JitPack).
+on:
+  workflow_dispatch:
+    inputs:
+      sdk_version:
+        description: "flex-checkout-flutter git ref (tag e.g. 1.2.3, branch, or SHA). Blank = the ref pinned in pubspec.yaml."
+        required: false
+        type: string
+        default: ""
+      do_upload:
+        description: "Upload the built APK to Sauce Labs (needs the Flex + Sauce credentials). Set false for a build-only run."
+        required: false
+        type: boolean
+        default: true
+  pull_request:
+    paths:
+      - "example-apps/flutter-default/**"
+      - ".github/workflows/build-flutter-android-default.yml"
+  workflow_call:
+    inputs:
+      sdk_version:
+        description: "flex-checkout-flutter git ref (see workflow_dispatch). Blank = pubspec.yaml pin."
+        required: false
+        type: string
+        default: ""
+      do_upload:
+        description: "Upload the built APK to Sauce Labs (a test workflow passes true to get a fresh artifact to run against)."
+        required: false
+        type: boolean
+        default: true
+      sauce_api_host:
+        description: "SDK-487 fault injection: override the Sauce Storage API host used by .github/actions/sauce-upload (e.g. a bogus host to deterministically reproduce a curl exit-6 DNS failure). Blank = the action's real-API default."
+        required: false
+        type: string
+        default: ""
+    outputs:
+      sauce_file_id:
+        description: "Sauce Labs App Storage file id of the uploaded APK"
+        value: ${{ jobs.build.outputs.sauce_file_id }}
+      apk_filename:
+        description: "Uploaded APK filename (Sauce Storage name)"
+        value: ${{ jobs.build.outputs.apk_filename }}
+      resolved_sdk_version:
+        description: "The flex-checkout-flutter git ref actually built (sdk_version input → pubspec.yaml pin)"
+        value: ${{ jobs.build.outputs.resolved_sdk_version }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: example-apps/flutter-default
+
+jobs:
+  build:
+    name: Build APK + upload to Sauce
+    runs-on: ubuntu-latest
+    outputs:
+      sauce_file_id: ${{ steps.upload-app.outputs.sauce_file_id }}
+      apk_filename: ${{ steps.locate-apk.outputs.apk_filename }}
+      resolved_sdk_version: ${{ steps.resolve-version.outputs.resolved_sdk_version }}
+    steps:
+      # A cross-repo `uses: flexapp/sdk-test-automation/...@ref` call runs with the CALLER's
+      # `github` context AND the CALLER-scoped default GITHUB_TOKEN, which cannot read this
+      # private repo — `repository:` alone 404s ("Not Found" resolving the default branch).
+      # Only mint a token for that cross-repo case (github.repository != this repo) — a direct
+      # pull_request/workflow_dispatch trigger on this repo already has full same-repo access via
+      # the default token, and must stay secret-free (fork/Dependabot PRs never get
+      # FLEX_GH_APP_KEY, and this workflow's own pull_request path is documented as a
+      # no-secrets-required compile gate).
+      - name: Mint GitHub App token (cross-repo checkout only)
+        id: self-token
+        timeout-minutes: 5
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.FLEX_GH_APP_ID }}
+          private-key: ${{ secrets.FLEX_GH_APP_KEY }}
+          owner: flexapp
+          repositories: sdk-test-automation
+
+      # KNOWN LIMITATION: no ref is pinned here, so a cross-repo caller always gets this repo's
+      # default branch, even if the caller invoked a specific tag/SHA/non-default-branch of this
+      # workflow file. github.workflow_sha does NOT solve this — it resolves to the outermost
+      # (caller's) commit, not this nested reusable workflow's own revision, so passing it here
+      # 404s ("not our ref") against this repo. There is currently no context value exposed to a
+      # reusable workflow's own steps that identifies its own invoked revision; properly fixing
+      # this needs an explicit `ref` input threaded down from the top-level caller. Every current
+      # caller pins `@main` anyway, so this is a latent gap, not an active bug.
+      - name: Checkout sdk-test-automation (centralized host app)
+        uses: actions/checkout@v4
+        with:
+          repository: flexapp/sdk-test-automation
+          token: ${{ steps.self-token.outputs.token || github.token }}
+          persist-credentials: false
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.2'   # keep in sync with build-flutter-ios-default.yml + the README
+          channel: stable
+          cache: true   # caches the Flutter SDK only, NOT pub packages — hence the step below
+
+      - name: Cache pub dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: ${{ runner.os }}-pub-${{ hashFiles('example-apps/flutter-default/pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Resolve BEFORE `pub get` so an override applies to the same install. A git ref (unlike npm
+      # semver) may be a tag, branch, or SHA — validate the character set only, mirroring
+      # build-android-compose-default.yml's JitPack-ref validation. Written to $GITHUB_OUTPUT before
+      # the build attempt so it's still available in outputs even if the build later fails.
+      - name: Resolve SDK version
+        id: resolve-version
+        env:
+          SDK_VERSION: ${{ inputs.sdk_version }}
+        run: |
+          set -euo pipefail
+          VERSION="$SDK_VERSION"
+          if [ -n "$VERSION" ] && ! [[ "$VERSION" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::sdk_version must be a git ref (tag/branch/SHA, chars [A-Za-z0-9._/-]); got: $VERSION"
+            exit 1
+          fi
+          if [ -z "$VERSION" ]; then
+            VERSION=$(python3 -c "
+          import re
+          # Same indentation-anchored capture as the Install step's rewrite (PR #64 review).
+          block = re.search(r'^([ \t]*)flex_checkout_flutter:[ \t]*\n(?:\1[ \t]+\S.*\n)+', open('pubspec.yaml').read(), re.M).group(0)
+          print(re.search(r'ref:\s*\"?([^\"\n]+)\"?', block).group(1).strip())
+          ")
+          fi
+          echo "resolved_sdk_version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # Override branch: rewrites the ref inside the flex_checkout_flutter git block only (never
+      # the whole file), then re-resolves just that package so the lockfile in the JOB WORKSPACE
+      # picks it up — never committed. Mirrors the RN workflow's `yarn up --exact`.
+      - name: Install dependencies
+        env:
+          SDK_VERSION: ${{ inputs.sdk_version }}
+        run: |
+          set -euo pipefail
+          if [ -n "$SDK_VERSION" ]; then
+            python3 - "$SDK_VERSION" <<'EOF'
+          import re, sys
+          ref = sys.argv[1]
+          src = open('pubspec.yaml').read()
+          # Anchored to flex_checkout_flutter's OWN indentation (\1): its children are indented
+          # strictly deeper, so the capture ends at the next same-depth sibling — the old
+          # any-indented-line pattern ran to the next zero-indent line and, with count-unbounded
+          # re.sub, would have rewritten a second git-pinned dependency's ref: too (PR #64 review).
+          m = re.search(r'^([ \t]*)flex_checkout_flutter:[ \t]*\n(?:\1[ \t]+\S.*\n)+', src, re.M)
+          if not m:
+              sys.exit('flex_checkout_flutter git block not found in pubspec.yaml')
+          block = m.group(0)
+          if 'ref:' not in block:
+              sys.exit('no ref: inside the flex_checkout_flutter block to override')
+          new_block = re.sub(r'(ref:\s*)\S+', rf'\g<1>"{ref}"', block, count=1)
+          open('pubspec.yaml', 'w').write(src.replace(block, new_block))
+          print(new_block)
+          EOF
+            flutter pub upgrade flex_checkout_flutter
+          else
+            flutter pub get --enforce-lockfile
+          fi
+
+      # flex.properties (a DEDICATED file — the Flutter tool owns local.properties and rewrites it
+      # destructively during the build, which dropped the flex.* keys when they lived there) feeds
+      # flex.clientId / flex.apiKey into BuildConfig, read by MainActivity's flex.example/config
+      # channel handler. Split into two steps so the FLEX_API_KEY secret is mapped into the job
+      # environment ONLY on do_upload runs — see build-android-compose-default.yml for why.
+      - name: Write flex.properties — real creds (upload runs only)
+        if: ${{ inputs.do_upload }}
+        env:
+          FLEX_CLIENT_ID: ${{ vars.FLEX_CLIENT_ID_DEFAULT }}
+          FLEX_API_KEY: ${{ secrets.FLEX_API_KEY_DEFAULT }}
+        run: |
+          if [ -z "$FLEX_CLIENT_ID" ] || [ -z "$FLEX_API_KEY" ]; then
+            echo "::error::FLEX_CLIENT_ID_DEFAULT (variable) + FLEX_API_KEY_DEFAULT (secret) are required for build+upload runs."
+            exit 1
+          fi
+          # java.util.Properties treats backslashes as escapes — a rotated key containing one would
+          # be silently mangled into the APK and surface as inexplicable 401s on Sauce. Fail fast.
+          case "$FLEX_CLIENT_ID$FLEX_API_KEY" in *\\*)
+            echo "::error::credential contains a backslash — flex.properties would corrupt it; escape it or rotate the key."
+            exit 1
+          ;; esac
+          { echo "flex.clientId=$FLEX_CLIENT_ID"; echo "flex.apiKey=$FLEX_API_KEY"; } > android/flex.properties
+
+
+      - name: Write flex.properties — empty creds (build-only)
+        if: ${{ !inputs.do_upload }}
+        run: |
+          echo "::notice::Build-only run — empty credentials (compile gate; no secret in job env)."
+          { echo "flex.clientId="; echo "flex.apiKey="; } > android/flex.properties
+
+      # Static analysis + the widget smoke test run here (once, on the cheap Linux leg — the iOS
+      # workflow doesn't repeat them) so test/ is an actual gate, not dead coverage a build-only
+      # job would never compile.
+      - name: flutter analyze + test
+        run: |
+          flutter analyze
+          flutter test
+
+      - name: Build release APK
+        env:
+          FLEX_ENVIRONMENT: ${{ vars.FLEX_ENVIRONMENT || 'QA' }}
+        run: flutter build apk --release
+
+      - name: Locate built APK
+        id: locate-apk
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apks=(build/app/outputs/apk/release/flex-sdk-example-flutter-default-release-*.apk)
+          if [ ${#apks[@]} -ne 1 ]; then
+            echo "::error::expected exactly 1 release APK, found ${#apks[@]}"
+            ls -la build/app/outputs/apk/release/ || true
+            exit 1
+          fi
+          APK_PATH="${apks[0]}"
+          echo "apk_path=example-apps/flutter-default/$APK_PATH" >> "$GITHUB_OUTPUT"
+          echo "apk_filename=$(basename "$APK_PATH")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK to Sauce Labs Storage
+        id: upload-app
+        if: ${{ inputs.do_upload }}
+        # SDK-487: bounded retry + real HTTP status/body on failure, shared with the other 8 build
+        # workflows — see .github/actions/sauce-upload/action.yml.
+        uses: ./.github/actions/sauce-upload
+        env:
+          SAUCE_USERNAME: ${{ secrets.SAUCE_USERNAME }}
+          SAUCE_ACCESS_KEY: ${{ secrets.SAUCE_ACCESS_KEY }}
+        with:
+          app_path: ${{ steps.locate-apk.outputs.apk_path }}
+          app_filename: ${{ steps.locate-apk.outputs.apk_filename }}
+          description: "flutter-default-android sha=${{ github.sha }} run=${{ github.run_id }}"
+          api_host: ${{ inputs.sauce_api_host }}
+
+      - name: Upload APK artifact (build-only runs)
+        # On do_upload runs the APK has FLEX_API_KEY baked into BuildConfig, so publishing it as a
+        # 7-day artifact would leak the key to anyone with run-artifact access — it goes to Sauce
+        # instead. Gate off do_upload, same as every other example-app build workflow.
+        if: ${{ !inputs.do_upload }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.locate-apk.outputs.apk_filename }}
+          path: ${{ steps.locate-apk.outputs.apk_path }}
+          retention-days: 7
