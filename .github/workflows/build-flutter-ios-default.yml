@@ -1,0 +1,302 @@
+name: Build flutter-default example app (iOS)
+
+# Builds the iOS .app half of the flutter-default host app (embedding the PUBLISHED
+# flex_checkout_flutter plugin, which pulls the native FlexCheckout pod transitively from CocoaPods
+# trunk). On pull_request it is a BUILD-ONLY compile gate (no Sauce upload, no secrets required).
+# On workflow_dispatch / workflow_call it ALSO uploads the zipped .app to Sauce. Structurally
+# mirrors build-react-native-ios-default.yml; the Flutter toolchain, the xcconfig-based credential
+# injection, and the DEBUG (not Release) simulator build are what differ here.
+#
+# DEBUG, not Release: `flutter build ios --simulator` only supports debug mode — Flutter release
+# mode is AOT-only and the tool refuses release simulator builds. Unlike a debug RN app (which
+# red-screens without a Metro server), a debug-mode Flutter app is fully self-contained (JIT VM +
+# bundled kernel), so it runs fine on a Sauce simulator; main.dart disables the DEBUG banner so it
+# can't overlay tappable UI. The Android half stays release/AOT.
+#
+# Credentials: `flutter build ios` accepts no xcodebuild setting overrides, so the four FLEX_*
+# values are written into ios/Flutter/FlexConfig.xcconfig (committed with empty defaults, included
+# from Debug/Release.xcconfig, substituted into Info.plist) in the JOB WORKSPACE only. On do_upload
+# runs the resulting .app has FLEX_API_KEY baked in — same artifact-handling rule as everywhere
+# else: Sauce upload only, never a run artifact.
+#
+# No source-build (flex_sdk_ref) input yet — see the Android build workflow's header comment;
+# deferred to SDK-443.
+on:
+  workflow_dispatch:
+    inputs:
+      sdk_version:
+        description: "flex-checkout-flutter git ref (tag e.g. 1.2.3, branch, or SHA). Blank = the ref pinned in pubspec.yaml."
+        required: false
+        type: string
+        default: ""
+      do_upload:
+        description: "Upload the built .app to Sauce Labs (needs the Flex + Sauce credentials). Set false for a build-only run."
+        required: false
+        type: boolean
+        default: true
+  pull_request:
+    paths:
+      - "example-apps/flutter-default/**"
+      - ".github/workflows/build-flutter-ios-default.yml"
+  workflow_call:
+    inputs:
+      sdk_version:
+        description: "flex-checkout-flutter git ref (see workflow_dispatch). Blank = pubspec.yaml pin."
+        required: false
+        type: string
+        default: ""
+      do_upload:
+        description: "Upload the built .app to Sauce Labs (a test workflow passes true to get a fresh artifact to run against)."
+        required: false
+        type: boolean
+        default: true
+      sauce_api_host:
+        description: "SDK-487 fault injection: override the Sauce Storage API host used by .github/actions/sauce-upload (e.g. a bogus host to deterministically reproduce a curl exit-6 DNS failure). Blank = the action's real-API default."
+        required: false
+        type: string
+        default: ""
+    outputs:
+      sauce_file_id:
+        description: "Sauce Labs App Storage file id of the uploaded .app"
+        value: ${{ jobs.build.outputs.sauce_file_id }}
+      app_filename:
+        description: "Uploaded .app zip filename (Sauce Storage name)"
+        value: ${{ jobs.build.outputs.app_filename }}
+      resolved_sdk_version:
+        description: "The flex-checkout-flutter git ref actually built (sdk_version input → pubspec.yaml pin)"
+        value: ${{ jobs.build.outputs.resolved_sdk_version }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: example-apps/flutter-default
+
+jobs:
+  build:
+    name: Build .app + upload to Sauce
+    runs-on: macos-latest   # xcodebuild needs a macOS runner
+    outputs:
+      sauce_file_id: ${{ steps.upload-app.outputs.sauce_file_id }}
+      app_filename: ${{ steps.locate-app.outputs.app_filename }}
+      resolved_sdk_version: ${{ steps.resolve-version.outputs.resolved_sdk_version }}
+    steps:
+      # A cross-repo `uses: flexapp/sdk-test-automation/...@ref` call runs with the CALLER's
+      # `github` context AND the CALLER-scoped default GITHUB_TOKEN, which cannot read this
+      # private repo — `repository:` alone 404s ("Not Found" resolving the default branch).
+      # Only mint a token for that cross-repo case (github.repository != this repo) — a direct
+      # pull_request/workflow_dispatch trigger on this repo already has full same-repo access via
+      # the default token, and must stay secret-free (fork/Dependabot PRs never get
+      # FLEX_GH_APP_KEY, and this workflow's own pull_request path is documented as a
+      # no-secrets-required compile gate).
+      - name: Mint GitHub App token (cross-repo checkout only)
+        id: self-token
+        timeout-minutes: 5
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.FLEX_GH_APP_ID }}
+          private-key: ${{ secrets.FLEX_GH_APP_KEY }}
+          owner: flexapp
+          repositories: sdk-test-automation
+
+      # KNOWN LIMITATION: no ref is pinned here, so a cross-repo caller always gets this repo's
+      # default branch, even if the caller invoked a specific tag/SHA/non-default-branch of this
+      # workflow file. github.workflow_sha does NOT solve this — it resolves to the outermost
+      # (caller's) commit, not this nested reusable workflow's own revision, so passing it here
+      # 404s ("not our ref") against this repo. There is currently no context value exposed to a
+      # reusable workflow's own steps that identifies its own invoked revision; properly fixing
+      # this needs an explicit `ref` input threaded down from the top-level caller. Every current
+      # caller pins `@main` anyway, so this is a latent gap, not an active bug.
+      - name: Checkout sdk-test-automation (centralized host app)
+        uses: actions/checkout@v4
+        with:
+          repository: flexapp/sdk-test-automation
+          token: ${{ steps.self-token.outputs.token || github.token }}
+          persist-credentials: false
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.2'   # keep in sync with build-flutter-android-default.yml + the README
+          channel: stable
+          cache: true   # caches the Flutter SDK only, NOT pub packages — hence the step below
+
+      - name: Cache pub dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: ${{ runner.os }}-pub-${{ hashFiles('example-apps/flutter-default/pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
+
+      - name: Resolve SDK version
+        id: resolve-version
+        env:
+          SDK_VERSION: ${{ inputs.sdk_version }}
+        run: |
+          set -euo pipefail
+          VERSION="$SDK_VERSION"
+          if [ -n "$VERSION" ] && ! [[ "$VERSION" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::sdk_version must be a git ref (tag/branch/SHA, chars [A-Za-z0-9._/-]); got: $VERSION"
+            exit 1
+          fi
+          if [ -z "$VERSION" ]; then
+            VERSION=$(python3 -c "
+          import re
+          # Same indentation-anchored capture as the Install step's rewrite (PR #64 review).
+          block = re.search(r'^([ \t]*)flex_checkout_flutter:[ \t]*\n(?:\1[ \t]+\S.*\n)+', open('pubspec.yaml').read(), re.M).group(0)
+          print(re.search(r'ref:\s*\"?([^\"\n]+)\"?', block).group(1).strip())
+          ")
+          fi
+          echo "resolved_sdk_version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # Applied BEFORE the build so Podfile.lock resolution sees the overridden plugin version —
+      # same rewrite as build-flutter-android-default.yml's Install dependencies step.
+      - name: Install dependencies
+        env:
+          SDK_VERSION: ${{ inputs.sdk_version }}
+        run: |
+          set -euo pipefail
+          if [ -n "$SDK_VERSION" ]; then
+            python3 - "$SDK_VERSION" <<'EOF'
+          import re, sys
+          ref = sys.argv[1]
+          src = open('pubspec.yaml').read()
+          # Anchored to flex_checkout_flutter's OWN indentation (\1): its children are indented
+          # strictly deeper, so the capture ends at the next same-depth sibling — the old
+          # any-indented-line pattern ran to the next zero-indent line and, with count-unbounded
+          # re.sub, would have rewritten a second git-pinned dependency's ref: too (PR #64 review).
+          m = re.search(r'^([ \t]*)flex_checkout_flutter:[ \t]*\n(?:\1[ \t]+\S.*\n)+', src, re.M)
+          if not m:
+              sys.exit('flex_checkout_flutter git block not found in pubspec.yaml')
+          block = m.group(0)
+          if 'ref:' not in block:
+              sys.exit('no ref: inside the flex_checkout_flutter block to override')
+          new_block = re.sub(r'(ref:\s*)\S+', rf'\g<1>"{ref}"', block, count=1)
+          open('pubspec.yaml', 'w').write(src.replace(block, new_block))
+          print(new_block)
+          EOF
+            flutter pub upgrade flex_checkout_flutter
+            # The committed Podfile.lock pins the native FlexCheckout pod exactly, and `pod
+            # install` (which the Flutter build runs) respects those pins — an overridden plugin
+            # ref whose podspec needs a different native version would fail with a version
+            # conflict instead of building the requested revision. Job-workspace only, never
+            # committed, same spirit as the pubspec rewrite above.
+            rm -f ios/Podfile.lock
+          else
+            flutter pub get --enforce-lockfile
+          fi
+
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: example-apps/flutter-default/ios/Pods
+          key: ${{ runner.os }}-pods-${{ hashFiles('example-apps/flutter-default/ios/Podfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pods-
+
+      # FlexConfig.xcconfig substitutes $(FLEX_*) into Info.plist, read back by AppDelegate's
+      # flex.example/config channel handler. Split into two steps so the FLEX_API_KEY secret is
+      # mapped into the job env ONLY on do_upload runs, same as every other example-app workflow.
+      - name: Write FlexConfig.xcconfig — real creds (upload runs only)
+        if: ${{ inputs.do_upload }}
+        env:
+          FLEX_CLIENT_ID: ${{ vars.FLEX_CLIENT_ID_DEFAULT }}
+          FLEX_API_KEY: ${{ secrets.FLEX_API_KEY_DEFAULT }}
+          FLEX_ENVIRONMENT: ${{ vars.FLEX_ENVIRONMENT || 'QA' }}
+        run: |
+          set -euo pipefail
+          if [ -z "$FLEX_CLIENT_ID" ] || [ -z "$FLEX_API_KEY" ]; then
+            echo "::error::FLEX_CLIENT_ID_DEFAULT (variable) + FLEX_API_KEY_DEFAULT (secret) are required for build+upload runs."
+            exit 1
+          fi
+          # xcconfig treats '//' as a comment and '$(' as build-setting expansion — a rotated key
+          # containing either would be silently truncated/mangled into the .app. Fail fast.
+          case "$FLEX_CLIENT_ID$FLEX_API_KEY" in *//*|*'$('*)
+            echo "::error::credential contains an xcconfig metacharacter ('//' or '\$(') — FlexConfig.xcconfig would corrupt it; rotate the key."
+            exit 1
+          ;; esac
+          # Mirrors android/app/build.gradle.kts's defaultTokenBaseUrl switch — no localProps
+          # override concept on iOS, so this is the whole rule.
+          case "$FLEX_ENVIRONMENT" in
+            QA)   FLEX_TOKEN_BASE_URL="https://embed-onboarding.qa.getflex.com" ;;
+            STG)  FLEX_TOKEN_BASE_URL="https://embed-onboarding.stg.getflex.com" ;;
+            PROD) FLEX_TOKEN_BASE_URL="https://embed-onboarding.getflex.com" ;;
+            *)    FLEX_TOKEN_BASE_URL="https://embed-onboarding.int.getflex.com" ;;
+          esac
+          # xcconfig treats '//' as a comment start — writing the URL raw would truncate the
+          # setting to 'https:'. The standard escape is an empty build-setting expansion between
+          # the slashes: 'https:/$()/host' evaluates back to 'https://host'.
+          FLEX_TOKEN_BASE_URL_XC="https:/\$()/${FLEX_TOKEN_BASE_URL#https://}"
+          {
+            echo "FLEX_CLIENT_ID = $FLEX_CLIENT_ID"
+            echo "FLEX_API_KEY = $FLEX_API_KEY"
+            echo "FLEX_ENVIRONMENT = $FLEX_ENVIRONMENT"
+            echo "FLEX_TOKEN_BASE_URL = $FLEX_TOKEN_BASE_URL_XC"
+          } > ios/Flutter/FlexConfig.xcconfig
+
+      # Mirrors the RN build-only step, which still passes FLEX_ENVIRONMENT: creds stay empty (no
+      # secret in job env) but the environment is real, so build-only and upload artifacts differ
+      # only in credentials — not in config shape.
+      - name: Write FlexConfig.xcconfig — empty creds (build-only)
+        if: ${{ !inputs.do_upload }}
+        env:
+          FLEX_ENVIRONMENT: ${{ vars.FLEX_ENVIRONMENT || 'QA' }}
+        run: |
+          echo "::notice::Build-only run — empty credentials (compile gate; no secret in job env)."
+          {
+            echo "FLEX_CLIENT_ID ="
+            echo "FLEX_API_KEY ="
+            echo "FLEX_ENVIRONMENT = $FLEX_ENVIRONMENT"
+            echo "FLEX_TOKEN_BASE_URL ="
+          } > ios/Flutter/FlexConfig.xcconfig
+
+      # `flutter build ios --simulator` runs `pod install` itself (the Pods cache above still cuts
+      # its cost) and produces build/ios/iphonesimulator/Runner.app — unsigned, which is what Sauce
+      # simulators take.
+      - name: Build .app for simulator
+        run: flutter build ios --simulator
+
+      - name: Locate .app and create zip
+        id: locate-app
+        run: |
+          set -euo pipefail
+          APP_PATH="build/ios/iphonesimulator/Runner.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "::error::Built .app not found at $APP_PATH"
+            find build/ios -name "*.app" -type d || true
+            exit 1
+          fi
+          APP_FILENAME="flex-sdk-example-flutter-default-ios-${GITHUB_SHA::7}.zip"
+          PARENT="$(dirname "$APP_PATH")"
+          BASENAME="$(basename "$APP_PATH")"
+          (cd "$PARENT" && zip -qr "$GITHUB_WORKSPACE/example-apps/flutter-default/$APP_FILENAME" "$BASENAME")
+          echo "app_path=example-apps/flutter-default/$APP_FILENAME" >> "$GITHUB_OUTPUT"
+          echo "app_filename=$APP_FILENAME"                          >> "$GITHUB_OUTPUT"
+
+      - name: Upload .app to Sauce Labs Storage
+        id: upload-app
+        if: ${{ inputs.do_upload }}
+        # SDK-487: bounded retry + real HTTP status/body on failure, shared with the other 8 build
+        # workflows — see .github/actions/sauce-upload/action.yml. This is the leg that hit the
+        # unretried curl exit-6 (DNS) failure on 9/17 (nightly run 35213927600).
+        uses: ./.github/actions/sauce-upload
+        env:
+          SAUCE_USERNAME: ${{ secrets.SAUCE_USERNAME }}
+          SAUCE_ACCESS_KEY: ${{ secrets.SAUCE_ACCESS_KEY }}
+        with:
+          app_path: ${{ steps.locate-app.outputs.app_path }}
+          app_filename: ${{ steps.locate-app.outputs.app_filename }}
+          description: "flutter-default-ios sha=${{ github.sha }} run=${{ github.run_id }}"
+          api_host: ${{ inputs.sauce_api_host }}
+
+      - name: Upload .app artifact (build-only runs)
+        # Same rule as the Android workflow: on do_upload runs the .app has FLEX_API_KEY baked into
+        # Info.plist — Sauce upload only, never a run artifact.
+        if: ${{ !inputs.do_upload }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.locate-app.outputs.app_filename }}
+          path: ${{ steps.locate-app.outputs.app_path }}
+          retention-days: 7
