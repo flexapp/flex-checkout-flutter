@@ -1,3 +1,8 @@
+## Unreleased
+
+- Add `ModalEventType.additionalVerificationRequired` for the new non-terminal `MODAL_ADDITIONAL_VERIFICATION_REQUIRED` checkout event (SDK-1285).
+- Adopt Android SDK 1.7.0 and iOS SDK 1.6.0.
+
 ## 1.3.0
 
 - Attribute analytics events to `flutter`: the plugin now passes `sdk_platform: flutter` and its own package version as `sdk_version` down into both native cores at init (SDK-1146).
