@@ -1,6 +1,6 @@
 name: Detect version bump
 
-# Shared signal for "is this a release candidate?" so release-gate.yml and sauce-tests.yml can't
+# Shared signal for "is this a release candidate?" so release-gate.yml and any future consumer can't
 # drift apart on the definition. Compares pubspec.yaml's top-level "version:" between base and
 # head SHA, which works for both pull_request and merge_group events.
 #
