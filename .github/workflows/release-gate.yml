@@ -1,0 +1,99 @@
+name: Release gate (Sauce e2e)
+
+# Blocking gate for release-candidate PRs (any PR/merge-queue entry that bumps pubspec.yaml's
+# top-level "version:" — see detect-version-bump.yml).
+#
+# This workflow builds and dispatches NOTHING and holds no credentials. The Appium/Sauce suites run
+# from the private flexapp/sdk-test-automation repo, which downloads this (public) repo's code by
+# SHA and posts its results back onto the commit as two commit statuses:
+#   sdk-test-automation / flutter-android (Sauce)
+#   sdk-test-automation / flutter-ios (Sauce)
+# This job only waits for both to turn green, using the built-in read-only token.
+#
+# To start the suites for a release PR: in flexapp/sdk-test-automation, Actions →
+# "Release candidate: flutter" → Run workflow, with this PR's head SHA (and PR number, for the
+# result comment). Then re-run this check if it already timed out waiting.
+#
+# To actually block merges, add the "Sauce e2e gate (release)" check as required in branch
+# protection — it can't be selected until it has reported once.
+#
+# merge_group: without this trigger, a required check never gets a check-run for the merge queue's
+# synthetic ref, so it waits forever and blocks the whole queue. Kept even though this repo has no
+# merge queue configured today. Note the suites must then be started for the queue's merge SHA.
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+    branches: [main]
+  workflow_dispatch: # manual re-run against a release branch
+
+permissions:
+  contents: read
+  statuses: read
+
+jobs:
+  detect-version-bump:
+    uses: ./.github/workflows/detect-version-bump.yml
+
+  release-gate:
+    name: Sauce e2e gate (release)
+    needs: detect-version-bump
+    # always() is required: a skipped required check counts as passing for branch protection, so a
+    # transient detect-version-bump failure must not silently downgrade "must pass" into "skipped".
+    if: ${{ always() && (needs.detect-version-bump.result == 'failure' || needs.detect-version-bump.outputs.version_bumped == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - name: Fail closed — version-bump detection itself failed
+        if: ${{ needs.detect-version-bump.result == 'failure' }}
+        run: |
+          echo "::error::detect-version-bump failed, so we can't safely tell whether this is a release candidate. Failing this REQUIRED check rather than letting it be silently skipped-as-passing."
+          exit 1
+
+      - name: Wait for both centralized suite results (BLOCKING)
+        if: ${{ needs.detect-version-bump.result == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -uo pipefail
+          ANDROID_CONTEXT="sdk-test-automation / flutter-android (Sauce)"
+          IOS_CONTEXT="sdk-test-automation / flutter-ios (Sauce)"
+          MAX_ATTEMPTS=300  # 300 x 10s = ~50m
+          GRACE_ATTEMPTS=90 # ~15m with no status at all means nobody started the suites
+          START_HELP="Start them in flexapp/sdk-test-automation: Actions → 'Release candidate: flutter' → Run workflow with sha=$SHA, then re-run this check."
+
+          state_of() {
+            # The combined-status endpoint returns the latest status per context.
+            gh api "repos/$REPO/commits/$SHA/status" \
+              --jq "[.statuses[] | select(.context==\"$1\")] | (.[0].state // \"\")" 2>/dev/null || true
+          }
+
+          echo "Waiting for '$ANDROID_CONTEXT' and '$IOS_CONTEXT' on $SHA…"
+          for i in $(seq 1 "$MAX_ATTEMPTS"); do
+            ANDROID_STATE=$(state_of "$ANDROID_CONTEXT")
+            IOS_STATE=$(state_of "$IOS_CONTEXT")
+
+            for pair in "flutter-android:$ANDROID_STATE" "flutter-ios:$IOS_STATE"; do
+              case "${pair#*:}" in
+                failure|error)
+                  echo "::error::Centralized ${pair%%:*} suite reported ${pair#*:} — blocking the release PR."
+                  exit 1 ;;
+              esac
+            done
+
+            if [ "$ANDROID_STATE" = success ] && [ "$IOS_STATE" = success ]; then
+              echo "::notice::Both centralized flutter suites PASSED — release candidate may merge."
+              exit 0
+            fi
+
+            if [ -z "$ANDROID_STATE" ] && [ -z "$IOS_STATE" ] && [ "$i" -ge "$GRACE_ATTEMPTS" ]; then
+              echo "::error::No suite status on $SHA after ~15m — the suites were never started. $START_HELP"
+              exit 1
+            fi
+            echo "android=${ANDROID_STATE:-<none yet>} ios=${IOS_STATE:-<none yet>} — waiting (attempt $i/$MAX_ATTEMPTS)"
+            sleep 10
+          done
+          echo "::error::Timed out (~50m) waiting for both suites to finish. $START_HELP"
+          exit 1
