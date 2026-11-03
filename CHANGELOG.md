@@ -1,7 +1,8 @@
-## Unreleased
+## 1.4.0
 
 - Add `ModalEventType.additionalVerificationRequired` for the new non-terminal `MODAL_ADDITIONAL_VERIFICATION_REQUIRED` checkout event (SDK-1285).
-- Adopt Android SDK 1.7.0 and iOS SDK 1.6.0.
+- Adopt Android SDK 1.8.0 and iOS SDK 1.7.0.
+- Align the Android empty-token error message with the native SDKs (SDK-326).
 
 ## 1.3.0
 

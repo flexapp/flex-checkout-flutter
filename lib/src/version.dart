@@ -4,4 +4,4 @@
 /// Sent to the native cores as `sdk_version` so analytics events are attributed
 /// to `flutter` + this version rather than the underlying native core defaults
 /// (SDK-1146).
-const String kFlexCheckoutFlutterVersion = '1.3.0';
+const String kFlexCheckoutFlutterVersion = '1.4.0';
